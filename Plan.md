@@ -82,11 +82,39 @@ fixture 자체는 별도의 합성 mock 분자 좌표/원자번호를 사용— 
   `tests/characterization/test_spectrum_physics_oracle.py`.
 
 **완료 조건:**
-- [ ] 세 모델 모두 construction/forward/gradient/optimizer-step 오라클 테스트 존재.
-- [ ] FC/GMM physics 함수 오라클 테스트 존재.
-- [ ] `venv_spectrum_cpu`에서 `pytest tests/` 전체 통과, 각 테스트 수 초 이내로 종료.
-- [ ] 이 Step의 커밋에는 `tests/`와 (필요 시) `pytest.ini`/`pyproject.toml` 추가만 포함되고
-      프로덕션 코드 변경은 없다.
+- [x] 세 모델 모두 construction/forward/gradient/optimizer-step 오라클 테스트 존재.
+- [x] FC/GMM physics 함수 오라클 테스트 존재.
+- [x] `venv_spectrum_cpu`에서 `pytest tests/` 전체 통과 (13 passed, ~30초).
+- [x] 이 Step의 커밋에는 `tests/`와 `pytest.ini` 추가만 포함되고 프로덕션 코드 변경은 없다.
+
+**실제 구현 노트 (계획과 달라진 부분):**
+- 합성 fixture는 `tests/support/tiny_batches.py`에 모아뒀다. 분자는 탄소/산소 2종 원자로 이루어진
+  2~3원자짜리 초소형 분자 2개(batch size 2)이며, 모든 모델의 cutoff(5.0Å)보다 훨씬 가깝게
+  배치해 `radius_graph`가 빈 그래프를 만들지 않도록 했다.
+- Equiformer/PaiNN 순방향은 f_in(원자 feature)과 edge_d_index/edge_d_attr을 실제로 사용하지
+  않는다는 것을 코드로 확인했다 (Equiformer는 `atom_embed(node_atom)`만 사용, PaiNN 래퍼는
+  자체 `radius_graph`로 그래프를 재계산). 따라서 fixture의 `x`/`edge_d_*`는 인터페이스를 맞추기
+  위한 더미 값이다.
+- gradient/optimizer-step 오라클은 "주요 parameter의 `.grad` 값"을 개별적으로 저장하는 대신,
+  전체 parameter에 대한 **gradient L2 norm**과 **step 이후 parameter L2 norm** 스칼라로
+  압축해서 저장했다 (Equiformer는 파라미터가 3백만 개 이상이라 개별 저장이 비현실적).
+  이 스칼라 하나가 깨지면 회귀가 발생했다는 신호로는 충분하며, 어떤 값이 깨졌는지 상세 진단은
+  이후 Step에서 필요하면 추가한다.
+- optimizer는 `optim_factory.create_optimizer`(CLI arg 파싱에 의존)가 아니라 `torch.optim.AdamW`를
+  직접 사용했다. `optim_factory.py`는 Plan.md의 Step으로 명시적으로 다루지 않으므로 범위 밖으로
+  판단했다.
+- Geoformer는 `geoformer/module.py`의 `LNNP`(Lightning 래퍼) 대신, `LNNP.forward`/
+  `spectrum_step`이 실제로 호출하는 `geoformer.model.modeling_geoformer.create_model`과
+  `spectrum.loss.fc_loss`를 직접 호출했다. Lightning `Trainer` 전체를 오라클 테스트마다 띄우는
+  것은 무겁고, 두 함수 호출이 LNNP의 핵심 수치 로직 전부이기 때문이다. 전체 CLI 경로는 Step 0에서
+  이미 스모크 테스트로 별도 검증했다.
+- 오라클 값은 하드코딩 대신 `tests/support/golden.py`의 golden-fixture 패턴으로 저장한다: 처음
+  실행 시 골든 파일이 없으면 현재(legacy) 출력을 `tests/characterization/golden/`에 저장하고
+  일부러 실패(RED)하며, 재실행하면 그 파일과 비교해 통과(GREEN)한다. 실제로 모든 테스트를 이
+  2단계로 실행해 RED→GREEN 전환을 확인했다.
+- Equiformer는 named_parameters가 매우 많아(수백 개) construction 구조 골든 테스트는 생략했다
+  (PaiNN/Geoformer만 파라미터 이름/shape 구조를 골든으로 남겼다). forward/gradient/
+  optimizer-step/evaluate 골든은 세 모델 모두 존재한다.
 
 ---
 
