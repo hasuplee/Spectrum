@@ -359,6 +359,21 @@ RED/REVIEW로 나눌 대상이 없어 한 커밋으로 처리한다.
 - [ ] CPU 환경에서 `train.py --base-model Geoformer`가 최소 smoke 수준으로 동작.
 - [ ] Step 1 오라클 대비 전체 동작 동일.
 
+**이번 TDD 사이클 (RED):**
+- 목표: `train.py`의 `main()` 안에 뒤섞여 있던 split npz 경로 결정과 커맨드 문자열 조립을
+  `resolve_split_npz(data_path, i_seed, i_fold)`/`build_command(args, i_seed, i_fold, split_npz)`
+  순수 함수로 뽑아낸다(둘 다 `os.system()`을 호출하지 않아 subprocess 없이 단위 테스트 가능).
+  `build_command`는 GPU 환경(`torch.cuda.is_available() == True`)에서는 legacy와 **완전히
+  동일한 문자열**을 만들고, CPU 환경에서만 Geoformer 커맨드에 `--accelerator cpu --ndevices 1`을
+  추가한다(CLAUDE.md 제약 2의 명시된 예외 — CPU에서 override 가능하게 하는 것이므로 GPU 기본
+  동작 변경이 아니다).
+- 범위: `train.py`의 커맨드 조립 로직만. `train_PaiNN.py`/`train_Equiformer.py`/
+  `train_Geoformer.py`는 건드리지 않는다.
+- 테스트 계획: `tests/refactor/test_train_dispatch.py` — 아직 없는 `build_command`/
+  `resolve_split_npz`를 import하여 `ImportError`로 실패 확인 (RED). PaiNN/Equiformer 커맨드와
+  Geoformer GPU 커맨드는 legacy 문자열과 리터럴 비교, Geoformer CPU 커맨드는 accelerator 플래그가
+  추가되는지 확인한다.
+
 ---
 
 ## Step 9 — Inference Skeleton 추가 [신규 인터페이스]
