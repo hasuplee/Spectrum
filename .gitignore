@@ -1,0 +1,19 @@
+# Virtual environments
+venv_spectrum_cpu/
+venv_spectrum/
+
+# Python
+__pycache__/
+*.pyc
+
+# IDE
+.idea/
+
+# torch_geometric processed dataset cache (regenerated from raw/ on first run)
+IrDB/processed/
+IrDB_uff/processed/
+IrDB_murcko/processed/
+PtDB/processed/
+
+# training outputs
+results_*/
