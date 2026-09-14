@@ -74,6 +74,11 @@ Phase 1 이후의 모든 구조 변경이 자동으로 검증되게 한다.
   mock 데이터를 사용한다 (CPU 환경 제약, `CLAUDE.md` 참고).
 - 세 모델(Geoformer/PaiNN/Equiformer) 각각에 대해 model construction, forward, physics
   함수, gradient, optimizer step 수준의 오라클 테스트를 확보한다.
+- 이 안전망을 만드는 작업 자체와, 이 안전망 위에서 진행하는 모든 이후 리팩토링은
+  [`.claude/TDD/SKILL.md`](.claude/TDD/SKILL.md)의 RED → GREEN → REVIEW 사이클을 따른다.
+  순수 구조 이동 사이클에서는 characterization test가 곧 오라클이므로 "새로 실패하는 테스트"
+  대신 "이동 전후로 계속 GREEN"이 검증 기준이 되고, 신규 인터페이스(G3 adapter, G4 `predict()`)
+  도입 사이클에서는 통상적인 RED(아직 없어서 실패하는 테스트)부터 시작한다.
 
 ## 비목표 (Non-Goals)
 

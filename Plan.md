@@ -4,6 +4,20 @@
 각 Step은 **완료 조건(Definition of Done)을 만족하고 회귀 테스트가 통과해야만** 다음 Step으로
 넘어간다. 각 Step은 원칙적으로 별도 커밋(또는 커밋 그룹)으로 분리한다.
 
+## 이 문서와 TDD 사이클의 관계
+
+모든 작업은 [`.claude/TDD/SKILL.md`](.claude/TDD/SKILL.md)의 RED → GREEN → REVIEW 사이클을 따른다.
+각 Step을 진행할 때, RED 단계에서 작성/갱신하는 "이번 사이클의 목표/범위/테스트 계획"은 **새 파일이
+아니라 해당 Step 섹션 아래에 하위 항목으로 기록**한다. 커밋은 RED 종료 시점과 REVIEW 종료 시점에
+자동으로 실행된다 (CLAUDE.md 제약 6).
+
+각 Step은 아래 두 성격 중 하나로 표시되어 있다:
+- **[구조 이동]**: 파일/함수 위치만 바꾸고 동작은 바꾸지 않는다. Step 1에서 만든
+  characterization test가 오라클이므로, 새로 실패하는 테스트를 억지로 만들지 않는다 — 이동
+  전후로 기존 테스트가 계속 GREEN을 유지하는지가 검증 기준이다.
+- **[신규 인터페이스]**: 지금까지 없던 공개 인터페이스(adapter, `predict()` 등)를 추가한다.
+  통상적인 TDD RED(아직 없어서 실패하는 테스트)부터 시작한다.
+
 ## 0. 사전 확정 사항 (환경)
 
 - 작업 가상환경: `venv_spectrum_cpu` (Python 3.12.10, Windows, CPU-only).
@@ -17,7 +31,7 @@
 
 ---
 
-## Step 0 — Legacy 보존 + 스냅샷 태깅
+## Step 0 — Legacy 보존 + 스냅샷 태깅 [환경 설정 — TDD 사이클 대상 아님]
 
 **목적:** 리팩토링 시작 시점의 동작을 오라클로 고정한다.
 
@@ -36,7 +50,7 @@
 
 ---
 
-## Step 1 — Characterization Test 작성
+## Step 1 — Characterization Test 작성 [오라클 구축 — 이후 모든 구조 이동 Step의 전제조건]
 
 **목적:** 이후 모든 구조 변경의 오라클이 될 회귀 테스트를 **구조 변경 이전에** 확보한다.
 이 Step에서는 프로덕션 코드를 옮기지 않는다. 오직 `tests/`만 추가한다.
@@ -76,7 +90,7 @@ fixture 자체는 별도의 합성 mock 분자 좌표/원자번호를 사용— 
 
 ---
 
-## Step 2 — Configuration 분리
+## Step 2 — Configuration 분리 [구조 이동]
 
 **목적:** 세 `train_XXX.py`에 흩어진 argparse 정의 중 **아키텍처 독립적인 인자**
 (batch-size, seed, output-dir, spectrum-type, n-mode, lineshape, beta, split-index-npz,
@@ -99,7 +113,7 @@ loss, workers, pin-mem, 분산학습 인자 등)를 공통 모듈로 추출한�
 
 ---
 
-## Step 3 — Model Construction 분리 (G3: Registry/Adapter)
+## Step 3 — Model Construction 분리 (G3: Registry/Adapter) [신규 인터페이스]
 
 **목적:** `build_painn`(`train_PaiNN.py:99-106`), `model_entrypoint`/`Equiformer` 레지스트리
 호출(`train_Equiformer.py:176-183`), `create_model`(`geoformer/model/modeling_geoformer.py`)을
@@ -124,7 +138,7 @@ loss, workers, pin-mem, 분산학습 인자 등)를 공통 모듈로 추출한�
 
 ---
 
-## Step 4 — Physics Module 정리 (spectrum 내부 전용)
+## Step 4 — Physics Module 정리 (spectrum 내부 전용) [구조 이동]
 
 **목적:** `spectrum/loss.py`를 `spectrum/` **내부에서만** 재구성한다 (G5 라이센스 경계 — 외부
 폴더와의 이동/병합 없음, `spectrum/` 내부 재구성은 자유).
@@ -146,7 +160,7 @@ loss, workers, pin-mem, 분산학습 인자 등)를 공통 모듈로 추출한�
 
 ---
 
-## Step 5 — Data Layer 분리
+## Step 5 — Data Layer 분리 [구조 이동]
 
 **목적:** dataset 선택(`IrDB` vs `PtDB`), split 로딩, `DataLoader` 생성 로직을 공통화한다.
 
@@ -164,7 +178,7 @@ loss, workers, pin-mem, 분산학습 인자 등)를 공통 모듈로 추출한�
 
 ---
 
-## Step 6 — Evaluation 공통화
+## Step 6 — Evaluation 공통화 [구조 이동 — 외부 시그니처 불변]
 
 **목적:** `engine.py`의 `evaluate()`(현재 loss 계산 + 예측 수집이 혼재)를 정리하여 G4(Training/
 Inference 분리)의 기반을 만든다.
@@ -182,7 +196,7 @@ Inference 분리)의 기반을 만든다.
 
 ---
 
-## Step 7 — Training Step 공통화
+## Step 7 — Training Step 공통화 [구조 이동 — Step 3 adapter를 사용하도록 배선만 교체]
 
 **목적:** `engine.py`의 `train_one_step()`도 Step 6과 동일한 방식으로 adapter의
 `forward(model, batch)`를 사용하도록 정리하고, PaiNN/Equiformer 경로에서 옵티마이저 스텝
@@ -201,7 +215,7 @@ Inference 분리)의 기반을 만든다.
 
 ---
 
-## Step 8 — train.py 통합
+## Step 8 — train.py 통합 [구조 이동 — 최종 학습 결과 불변]
 
 **목적:** `train.py`가 `os.system()`으로 서브프로세스 문자열을 조립하는 대신, 공통화된 구성
 요소(Step 2~7)를 사용해 PaiNN/Equiformer 경로를 일관되게 기동하도록 정리한다.
@@ -223,7 +237,7 @@ Inference 분리)의 기반을 만든다.
 
 ---
 
-## Step 9 — Inference Skeleton 추가
+## Step 9 — Inference Skeleton 추가 [신규 인터페이스]
 
 **목적:** G4의 "training/inference 분리" 골격을 완성한다.
 
