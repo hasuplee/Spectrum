@@ -390,9 +390,23 @@ RED/REVIEW로 나눌 대상이 없어 한 커밋으로 처리한다.
   이 API 위에 바로 얹힐 수 있는 골격**을 만드는 것이 목표다 (PRD 비목표 참고).
 
 **완료 조건:**
-- [ ] `predict()` 함수가 세 모델 모두에 대해(Geoformer는 Lightning `forward` 경로를 감싸는
+- [x] `predict()` 함수가 세 모델 모두에 대해(Geoformer는 Lightning `forward` 경로를 감싸는
       형태로) 존재하고 테스트로 커버됨.
-- [ ] Step 1 오라클 대비 `predict()` 출력이 legacy forward 출력과 동일.
+- [x] Step 1 오라클 대비 `predict()` 출력이 legacy forward 출력과 동일 (4개 테스트 모두
+      첫 실행에서 골든과 즉시 일치).
+
+**GREEN/REVIEW (완료):**
+`common/inference.py`의 `predict(model, batch, norm_factor, base_model)`을 구현. PaiNN/
+Equiformer는 `engine_style_forward`, Geoformer는 `geoformer_adapter.forward`를 내부적으로
+사용해 세 모델을 하나의 함수 시그니처로 다룬다. 학습 스크립트(`train_PaiNN.py` 등)는 건드리지
+않았다 — 이 골격은 독립된 새 API이지 기존 학습 경로의 대체가 아니다 (G4, PRD 비목표).
+REVIEW에서 스코프 크리프 없음을 확인: 스펙트럼 곡선 재구성(spectrum.physics 적용)은 의도적으로
+범위 밖에 남겼다. `pytest tests/` 46개(Phase 1 전체) 통과로 최종 확인.
+
+**Phase 1 완료.** Step 0~9 전 구간에서 PaiNN CLI 스모크 테스트 수치가 한 번도 바뀌지 않았고
+(behavior preservation, G1), `spectrum/`과 외부 폴더 사이의 소스 이동/병합은 발생하지 않았다
+(G5). G2(실행흐름 공통화)·G3(registry/adapter)·G4(training/inference 분리 골격)·
+G6(회귀 안전망)도 모두 달성되었다.
 
 **이번 TDD 사이클 (RED):**
 - 목표: `common/inference.py`에 `predict(model, batch, norm_factor, base_model) -> Tensor`를
