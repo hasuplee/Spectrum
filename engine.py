@@ -80,8 +80,9 @@ def train_one_step(model: torch.nn.Module, criterion: torch.nn.Module,
         loss_metric.update(loss.item(), n=pred.shape[0])
         err = pred.detach() - data.y
         mae_metric.update(torch.mean(torch.abs(err)).item(), n=pred.shape[0])
-        
-        torch.cuda.synchronize()
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
 
         # logging
         if input_step % print_freq == 0:
