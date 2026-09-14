@@ -292,6 +292,19 @@ Inference 분리)의 기반을 만든다.
 - [ ] `evaluate()`가 내부적으로 "예측 생성" 함수를 호출하는 구조로 변경, 외부 시그니처/반환값 불변.
 - [ ] Step 1 오라클 대비 evaluate 결과(MAE, loss, preds) 동일.
 
+**이번 TDD 사이클 (RED):**
+- 목표: PaiNN adapter와 Equiformer adapter의 `forward(model, batch)`가 완전히 동일한 코드였다는
+  사실(Step 3에서 이미 확인됨)을 실제로 중복 제거한다 — 공유 함수
+  `common/adapters/_shared.py`의 `engine_style_forward(model, batch)`로 뽑아내고, 두 adapter의
+  `forward`는 이 함수를 그대로 가리키게 한다. `engine.py`의 `evaluate()`는 `model(f_in=...,...)`
+  직접 호출을 `engine_style_forward(model, data)` 호출로 교체하고, 예측 생성(forward +
+  unnormalize)을 내부 헬퍼로 분리한다. 외부 시그니처/반환값은 그대로 유지한다.
+- 범위: `evaluate()`만. `train_one_step()` 교체는 Step 7에서 한다.
+- 테스트 계획: `tests/refactor/test_engine_style_forward.py` — 아직 없는
+  `common.adapters._shared`를 import하여 `ModuleNotFoundError`로 실패 확인 (RED). GREEN 이후
+  `painn_adapter.forward is engine_style_forward`로 진짜 중복 제거인지 확인하고, Step 1
+  golden(`painn_forward_output`)과도 비교한다.
+
 ---
 
 ## Step 7 — Training Step 공통화 [구조 이동 — Step 3 adapter를 사용하도록 배선만 교체]
