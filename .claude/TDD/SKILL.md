@@ -63,7 +63,7 @@ description: 모든 기능 구현이나 버그 수정 시, 구현 코드를 작�
 
 이 워크플로우 밖에서, 즉 RED 종료 시점과 REVIEW 종료 시점이 아닌 다른 시점에 커밋을 실행하지 않는다. 단, 이 두 시점 모두 **커밋 자체는 확인 없이 자동으로 실행한다.**
 
-커밋 메시지는 첫 줄에 이번 커밋이 RED인지 REVIEW인지와 무엇을 했는지를 적고, 본문에 왜 필요했는지를 적는다 (예: `RED: PaiNN adapter forward 실패 테스트 추가`, `REVIEW: PaiNN adapter forward 구현 반영`). 별도의 COMMIT_CONVENTION.md 파일은 두지 않는다 — `CLAUDE.md`의 커밋 단위 분리 원칙(제약 5, RED 커밋과 REVIEW 커밋을 서로 다른 성격의 변경과 섞지 않음)만 따른다.
+커밋 메시지는 **한글로**, 첫 줄에 이번 커밋이 RED인지 REVIEW인지와 무엇을 했는지를 적고, 본문에 왜 필요했는지를 적는다 (예: `RED: PaiNN adapter forward 실패 테스트 추가`, `REVIEW: PaiNN adapter forward 구현 반영`). `Co-Authored-By:` 트레일러 줄만 형식 그대로(영문) 유지한다 (`CLAUDE.md` 제약 7). 별도의 COMMIT_CONVENTION.md 파일은 두지 않는다 — `CLAUDE.md`의 커밋 단위 분리 원칙(제약 5, RED 커밋과 REVIEW 커밋을 서로 다른 성격의 변경과 섞지 않음)만 따른다.
 
 ## 테스트 함수 네이밍 규칙 (필수)
 
