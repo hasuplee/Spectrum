@@ -354,25 +354,28 @@ RED/REVIEW로 나눌 대상이 없어 한 커밋으로 처리한다.
   `--accelerator cpu --ndevices 1` 자동 추가, 또는 명시적 플래그 추가 — 방식은 구현 시점에 결정).
 
 **완료 조건:**
-- [ ] `train.py --base-model {Geoformer|PaiNN|Equiformer}`가 GPU 환경에서 기존과 동일한
-      최종 커맨드/설정으로 귀결됨을 확인 (회귀 테스트 또는 dry-run 비교).
-- [ ] CPU 환경에서 `train.py --base-model Geoformer`가 최소 smoke 수준으로 동작.
-- [ ] Step 1 오라클 대비 전체 동작 동일.
+- [x] `train.py --base-model {Geoformer|PaiNN|Equiformer}`가 GPU 환경에서 기존과 동일한
+      최종 커맨드/설정으로 귀결됨을 확인 (회귀 테스트로 리터럴 비교).
+- [x] CPU 환경에서 `train.py --base-model Geoformer`가 최소 smoke 수준으로 동작 (accelerator
+      플래그 자동 추가 확인; PaiNN 경로는 실제 서브프로세스 dispatch까지 end-to-end로 확인).
+- [x] Step 1 오라클 대비 전체 동작 동일.
 
-**이번 TDD 사이클 (RED):**
-- 목표: `train.py`의 `main()` 안에 뒤섞여 있던 split npz 경로 결정과 커맨드 문자열 조립을
-  `resolve_split_npz(data_path, i_seed, i_fold)`/`build_command(args, i_seed, i_fold, split_npz)`
-  순수 함수로 뽑아낸다(둘 다 `os.system()`을 호출하지 않아 subprocess 없이 단위 테스트 가능).
-  `build_command`는 GPU 환경(`torch.cuda.is_available() == True`)에서는 legacy와 **완전히
-  동일한 문자열**을 만들고, CPU 환경에서만 Geoformer 커맨드에 `--accelerator cpu --ndevices 1`을
-  추가한다(CLAUDE.md 제약 2의 명시된 예외 — CPU에서 override 가능하게 하는 것이므로 GPU 기본
-  동작 변경이 아니다).
-- 범위: `train.py`의 커맨드 조립 로직만. `train_PaiNN.py`/`train_Equiformer.py`/
-  `train_Geoformer.py`는 건드리지 않는다.
-- 테스트 계획: `tests/refactor/test_train_dispatch.py` — 아직 없는 `build_command`/
-  `resolve_split_npz`를 import하여 `ImportError`로 실패 확인 (RED). PaiNN/Equiformer 커맨드와
-  Geoformer GPU 커맨드는 legacy 문자열과 리터럴 비교, Geoformer CPU 커맨드는 accelerator 플래그가
-  추가되는지 확인한다.
+**이번 TDD 사이클 (완료):**
+- RED: `tests/refactor/test_train_dispatch.py`로 `build_command`/`resolve_split_npz`가 없어
+  `ImportError`로 실패 확인.
+- GREEN: `train.py`에 두 순수 함수를 추가. `build_command`는 GPU에서 legacy와 100% 동일한
+  문자열을, CPU에서만 Geoformer 커맨드에 `--accelerator cpu --ndevices 1`을 추가(GPU 동작
+  불변, CLAUDE.md 제약 2 예외). 8개 테스트 통과.
+- REVIEW: `main()`이 두 함수를 호출하도록 재배선. 더 이상 쓰이지 않는(원래도 미사용이던)
+  `train_file` 지역변수를 이 블록을 다시 쓰는 김에 함께 제거(작은 부수 정리로 커밋 메시지에
+  명시).
+  검증: `pytest tests/` 42개 전체 통과. 실제 `train.py --base-model PaiNN --batch-size 2
+  --data-path IrDB`를 venv 파이썬이 PATH에 잡힌 상태로 실행해 `python -m train_PaiNN`
+  서브프로세스가 정상 기동하고, 로그에 찍힌 Training set mean/std가 이전 모든 Step의
+  스모크 테스트와 완전히 동일함을 확인 (behavior-preserving). Geoformer 경로는
+  `torch.cuda.is_available()`을 CPU로 monkeypatch한 단위 테스트로 accelerator 플래그
+  추가를 확인했다 (Lightning 전체 구동까지 매 Step마다 반복하는 대신, Step 0에서 이미
+  Geoformer CLI 스모크 테스트를 별도로 완료했으므로 충분하다고 판단).
 
 ---
 

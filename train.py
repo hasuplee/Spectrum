@@ -1,5 +1,8 @@
 import argparse
 import os
+
+import torch
+
 base_models = ["Geoformer", "PaiNN", "Equiformer"]
 spectrum_types = ["Naive", "GMM", "FC"]
 data_path_list = ['IrDB', 'IrDB_uff', 'IrDB_murcko', 'PtDB']
@@ -36,6 +39,41 @@ def get_args():
 
     return parser.parse_args()
 
+def resolve_split_npz(data_path: str, i_seed: int, i_fold: int) -> str:
+    if data_path in ['IrDB', 'IrDB_uff']:
+        return f'{data_path}/raw/CV811/splits.{i_seed}.{i_fold}.npz'
+    elif data_path == 'IrDB_murcko':
+        return f'{data_path}/raw/CV_murcko/splits.{i_seed}.{i_fold}.npz'
+    elif data_path == 'PtDB':
+        return f'{data_path}/raw/CV_10fold/splits.{i_seed}.{i_fold}.npz'
+    raise Exception(f"Unsupported data_path: {data_path}")
+
+def build_command(args, i_seed: int, i_fold: int, split_npz: str) -> str:
+    """Builds the subprocess command line for --base-model {Geoformer|PaiNN|Equiformer}.
+
+    On GPU (torch.cuda.is_available() == True) this produces exactly the
+    legacy command line. On CPU-only environments, train_Geoformer.py's
+    --accelerator defaults to "gpu" and would otherwise crash (see
+    CLAUDE.md's known CPU issue), so an explicit CPU override is appended
+    only in that case -- this does not change GPU behavior (CLAUDE.md
+    constraint 2's documented exception).
+    """
+    log_path = f'results_{args.base_model}/{i_seed}/{i_fold}'
+    batch_size = args.batch_size
+
+    if args.base_model == 'Geoformer':
+        cmd_line = f'python -m train_Geoformer --conf geoformer/examples/{args.spectrum_type}.yml --log-dir {log_path} --seed {i_seed} --splits {split_npz} --batch-size {batch_size} --dataset-root {args.data_path}'
+        if not torch.cuda.is_available():
+            cmd_line += ' --accelerator cpu --ndevices 1'
+    elif args.base_model == 'PaiNN':
+        cmd_line = f'python -m train_PaiNN --spectrum-type {args.spectrum_type} --output-dir {log_path} --split-index-npz {split_npz} --seed {i_seed} --batch-size {batch_size} --data-path {args.data_path}'
+    elif args.base_model == 'Equiformer':
+        cmd_line = f'python -m train_Equiformer --spectrum-type {args.spectrum_type} --output-dir {log_path} --split-index-npz {split_npz} --seed {i_seed} --batch-size {batch_size} --data-path {args.data_path}'
+    else:
+        raise Exception("Undefined model. Please select one from Geoformer, PaiNN, or Equiformer.")
+
+    return cmd_line
+
 def main():
     i_seed = 0
     i_fold = 0
@@ -45,36 +83,23 @@ def main():
         print ("Please select base-model from Geoformer, PaiNN, or Equiformer")
         print ("Please select spectrum-type from Naive, GMM, or FC")
         return
-    batch_size = args.batch_size
 
     if not args.base_model in base_models:
         raise Exception("Undefined model. Please select one from Geoformer, PaiNN, or Equiformer.")
     if not args.spectrum_type in spectrum_types:
         raise Exception("Undefined spectrum_type. Please select one from Naive, GMM, or FC.")
 
-    train_file = f'train_{args.base_model}'
-    log_path = f'results_{args.base_model}/{i_seed}/{i_fold}'
-    if args.data_path in ['IrDB', 'IrDB_uff']:
-        split_npz = f'{args.data_path}/raw/CV811/splits.{i_seed}.{i_fold}.npz'
-    elif args.data_path == 'IrDB_murcko':
-        split_npz = f'{args.data_path}/raw/CV_murcko/splits.{i_seed}.{i_fold}.npz'
-    elif args.data_path == 'PtDB':
-        split_npz = f'{args.data_path}/raw/CV_10fold/splits.{i_seed}.{i_fold}.npz'
-    
+    split_npz = resolve_split_npz(args.data_path, i_seed, i_fold)
+
     if not os.path.exists(split_npz):
         raise Exception(f"{split_npz} file is not exist. Please check the i_seed and i_fold")
-    
-    if args.base_model == 'Geoformer':
-        cmd_line = f'python -m train_Geoformer --conf geoformer/examples/{args.spectrum_type}.yml --log-dir {log_path} --seed {i_seed} --splits {split_npz} --batch-size {batch_size} --dataset-root {args.data_path}'
-    elif args.base_model == 'PaiNN':
-        cmd_line = f'python -m train_PaiNN --spectrum-type {args.spectrum_type} --output-dir {log_path} --split-index-npz {split_npz} --seed {i_seed} --batch-size {batch_size} --data-path {args.data_path}'
-    elif args.base_model == 'Equiformer':
-        cmd_line = f'python -m train_Equiformer --spectrum-type {args.spectrum_type} --output-dir {log_path} --split-index-npz {split_npz} --seed {i_seed} --batch-size {batch_size} --data-path {args.data_path}'
-    
+
+    cmd_line = build_command(args, i_seed, i_fold, split_npz)
+
     # os.system(f'phd run -p mai_small_gpu -ng 1 -GR "name==H100" -- {cmd_line}')
     os.system(f'{cmd_line}')
 
-    
+
 if __name__ == "__main__":
     main()
-    
+
