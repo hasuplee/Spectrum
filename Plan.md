@@ -259,6 +259,20 @@ loss, workers, pin-mem, 분산학습 인자 등)를 공통 모듈로 추출한�
 - [ ] PaiNN/Equiformer 경로의 dataset/dataloader 생성 코드 중복 제거.
 - [ ] Step 1 오라클 대비 동일 idx_train/val/test, 동일 batch 구성 확인.
 
+**이번 TDD 사이클 (RED):**
+- 목표: dataset 선택/split 로딩/평균·표준편차 계산을 `common/data.py`의
+  `load_dataset_splits(args)`로, DataLoader 생성(distributed sampler 분기 포함)을
+  `build_dataloaders(args, train_dataset, val_dataset, test_dataset)`로 이동한다.
+  "since dataset needs random" 주석이 붙은 `torch.manual_seed(args.seed)`/
+  `np.random.seed(args.seed)` 재설정(원본 코드에서 dataset 통계 계산 직후, 모델 생성 직전에
+  있던 것)은 `load_dataset_splits`가 반환하기 직전에 그대로 유지한다 — 호출 순서가 바뀌면
+  이후 모델 초기화의 랜덤성이 달라질 수 있기 때문이다.
+- 범위: 이 두 함수의 이동만. Geoformer의 `geoformer/data.py` `DataModule`은 건드리지 않는다
+  (Lightning 인터페이스라 강제 통합하지 않음, 이미 비목표로 명시됨).
+- 테스트 계획: `tests/refactor/test_common_data.py` — 아직 없는 `common.data`를 import하여
+  `ModuleNotFoundError`로 실패 확인 (RED). 실제 IrDB 데이터셋에서 4개 인덱스(train 2/val 1/
+  test 1)만 골라 분리/통계/배치 구성이 기대대로 되는지 확인한다.
+
 ---
 
 ## Step 6 — Evaluation 공통화 [구조 이동 — 외부 시그니처 불변]
