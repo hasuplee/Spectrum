@@ -4,10 +4,11 @@ Wraps Equiformer/registry.py's model_entrypoint lookup behind the common
 build(args)/forward(model, batch) interface.
 """
 
-import torch
 from torch import nn
 
 from Equiformer import model_entrypoint
+
+from common.adapters._shared import engine_style_forward as forward
 
 
 def build(args) -> nn.Module:
@@ -23,15 +24,4 @@ def build(args) -> nn.Module:
         task_std=getattr(args, "task_std", None),
         atomref=getattr(args, "atomref", None),
         drop_path=args.drop_path,
-    )
-
-
-def forward(model: nn.Module, batch) -> torch.Tensor:
-    return model(
-        f_in=batch.x,
-        pos=batch.pos,
-        batch=batch.batch,
-        node_atom=batch.z,
-        edge_d_index=batch.edge_d_index,
-        edge_d_attr=batch.edge_d_attr,
     )

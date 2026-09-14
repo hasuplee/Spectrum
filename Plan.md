@@ -289,21 +289,25 @@ Inference 분리)의 기반을 만든다.
 - Adapter의 `forward(model, batch)` (Step 3)를 `evaluate()` 내부에서 사용하도록 교체한다.
 
 **완료 조건:**
-- [ ] `evaluate()`가 내부적으로 "예측 생성" 함수를 호출하는 구조로 변경, 외부 시그니처/반환값 불변.
-- [ ] Step 1 오라클 대비 evaluate 결과(MAE, loss, preds) 동일.
+- [x] `evaluate()`가 내부적으로 "예측 생성" 함수를 호출하는 구조로 변경, 외부 시그니처/반환값 불변.
+- [x] Step 1 오라클 대비 evaluate 결과(MAE, loss, preds) 동일 (34개 테스트 전체 통과,
+      기존 `test_PaiNN_evaluate가_고정된다`/`test_Equiformer_evaluate가_고정된다`가 그대로 통과).
 
-**이번 TDD 사이클 (RED):**
-- 목표: PaiNN adapter와 Equiformer adapter의 `forward(model, batch)`가 완전히 동일한 코드였다는
-  사실(Step 3에서 이미 확인됨)을 실제로 중복 제거한다 — 공유 함수
-  `common/adapters/_shared.py`의 `engine_style_forward(model, batch)`로 뽑아내고, 두 adapter의
-  `forward`는 이 함수를 그대로 가리키게 한다. `engine.py`의 `evaluate()`는 `model(f_in=...,...)`
-  직접 호출을 `engine_style_forward(model, data)` 호출로 교체하고, 예측 생성(forward +
-  unnormalize)을 내부 헬퍼로 분리한다. 외부 시그니처/반환값은 그대로 유지한다.
-- 범위: `evaluate()`만. `train_one_step()` 교체는 Step 7에서 한다.
-- 테스트 계획: `tests/refactor/test_engine_style_forward.py` — 아직 없는
-  `common.adapters._shared`를 import하여 `ModuleNotFoundError`로 실패 확인 (RED). GREEN 이후
-  `painn_adapter.forward is engine_style_forward`로 진짜 중복 제거인지 확인하고, Step 1
-  golden(`painn_forward_output`)과도 비교한다.
+**이번 TDD 사이클 (완료):**
+- RED: `tests/refactor/test_engine_style_forward.py`로 `common.adapters._shared`가 없어
+  `ModuleNotFoundError`로 실패 확인.
+- GREEN: `common/adapters/_shared.py`에 `engine_style_forward(model, batch)`를 추가하고,
+  `painn_adapter.py`/`equiformer_adapter.py`의 중복된 `forward` 함수 정의를
+  `from common.adapters._shared import engine_style_forward as forward`로 교체(진짜 동일
+  함수 객체가 되었음을 `is` 비교로 확인). 2개 테스트 통과.
+- REVIEW: `engine.py`에 `predict_batch(model, data, task_mean, task_std)`(forward+unnormalize)와
+  `compute_spec_loss(data, pred, criterion, loss_type, spec_type, line_shape, beta)`(지표 계산)
+  헬퍼를 추가하고, `evaluate()` 내부의 `model(f_in=...,...)` 직접 호출과 spec_type 분기를 각각
+  이 헬퍼 호출로 교체했다. `evaluate()`의 외부 시그니처/반환값(`mae_metric.avg, loss_metric.avg,
+  preds, ids`)은 그대로다. `train_one_step()`은 이번 Step에서 건드리지 않음(Step 7에서 같은
+  헬퍼를 재사용할 예정).
+  검증: `pytest tests/` 34개 전체 통과, PaiNN CLI 스모크 테스트가 이전 Step들과 완전히 동일한
+  수치 (behavior-preserving).
 
 ---
 

@@ -13,6 +13,8 @@ from torch import nn
 from torch_cluster import radius_graph
 from fairchem.core.models.painn.painn import PaiNN as _PaiNN
 
+from common.adapters._shared import engine_style_forward as forward
+
 
 def _rbf(dist, K, cutoff):
     centers = torch.linspace(0, cutoff, K, device=dist.device)
@@ -82,15 +84,4 @@ def build(args) -> nn.Module:
         num_rbf=args.num_basis,
         hidden_channels=args.embed_dim,
         num_layers=args.num_layers,
-    )
-
-
-def forward(model: nn.Module, batch) -> torch.Tensor:
-    return model(
-        f_in=batch.x,
-        pos=batch.pos,
-        batch=batch.batch,
-        node_atom=batch.z,
-        edge_d_index=batch.edge_d_index,
-        edge_d_attr=batch.edge_d_attr,
     )

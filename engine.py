@@ -5,6 +5,7 @@ import time
 from torch_cluster import radius_graph
 import torch_geometric
 from spectrum.physics import gmm_loss, fc_loss
+from common.adapters._shared import engine_style_forward
 import numpy as np
 import itertools
 
@@ -97,45 +98,54 @@ def train_one_step(model: torch.nn.Module, criterion: torch.nn.Module,
     return mae_metric.avg
 
 
-def evaluate(model, norm_factor, data_loader, device, print_freq=100, 
+def predict_batch(model, data, task_mean, task_std):
+    """Model forward (via the shared PaiNN/Equiformer calling convention) +
+    unnormalization. Shared by evaluate() (and, from Step 7, train_one_step())."""
+    pred = engine_style_forward(model, data)
+    pred = pred.view(pred.shape[0], -1)
+    pred = pred * task_std + task_mean  # unnormalization
+    return pred
+
+
+def compute_spec_loss(data, pred, criterion, loss_type, spec_type, line_shape, beta):
+    if spec_type == 'Naive':
+        return criterion(pred, data.y)
+    elif spec_type == 'GMM':
+        return gmm_loss(data.spec_x, data.spec_y, pred, loss_type=loss_type)
+    elif spec_type == 'FC':
+        return fc_loss(data.spec_x, data.spec_y, pred, loss_type=loss_type, line_shape=line_shape, beta=beta)
+
+
+def evaluate(model, norm_factor, data_loader, device, print_freq=100,
         loss_type = 'MAE',
         spec_type = 'FC',
         line_shape = 'gaussian',
         beta = 2.0,
         logger=None):
-    
+
     model.eval()
-    
+
     loss_metric = AverageMeter()
     mae_metric = AverageMeter()
     criterion = torch.nn.L1Loss()
     criterion.eval()
-    
+
     task_mean = norm_factor[0] #model.task_mean
     task_std  = norm_factor[1] #model.task_std
 
     id_buffer = []
     pred_buffer: list[torch.Tensor] = []
-    
+
     with torch.no_grad():
         for data in data_loader:
             data = data.to(device)
-            
-            pred = model(f_in=data.x, pos=data.pos, batch=data.batch, 
-                node_atom=data.z,
-                edge_d_index=data.edge_d_index, edge_d_attr=data.edge_d_attr)
-            pred = pred.view(pred.shape[0], -1)
-            pred = pred*task_std + task_mean #unnormalization
+
+            pred = predict_batch(model, data, task_mean, task_std)
 
             id_buffer.append(data['name'])
             pred_buffer.append(pred.cpu())
-            
-            if spec_type == 'Naive':
-                loss = criterion(pred, data.y)
-            elif spec_type == 'GMM':
-                loss = gmm_loss(data.spec_x, data.spec_y, pred, loss_type=loss_type)
-            elif spec_type == 'FC':
-                loss = fc_loss(data.spec_x, data.spec_y, pred, loss_type=loss_type, line_shape=line_shape, beta=beta)
+
+            loss = compute_spec_loss(data, pred, criterion, loss_type, spec_type, line_shape, beta)
             loss_metric.update(loss.item(), n=pred.shape[0])
             err = pred.detach() - data.y
             mae_metric.update(torch.mean(torch.abs(err)).item(), n=pred.shape[0])
