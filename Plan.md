@@ -394,6 +394,19 @@ RED/REVIEW로 나눌 대상이 없어 한 커밋으로 처리한다.
       형태로) 존재하고 테스트로 커버됨.
 - [ ] Step 1 오라클 대비 `predict()` 출력이 legacy forward 출력과 동일.
 
+**이번 TDD 사이클 (RED):**
+- 목표: `common/inference.py`에 `predict(model, batch, norm_factor, base_model) -> Tensor`를
+  추가한다. PaiNN/Equiformer는 `common.adapters._shared.engine_style_forward`, Geoformer는
+  `common.adapters.geoformer_adapter.forward`를 내부적으로 사용해 세 모델을 하나의 함수로
+  다룬다. 학습 루프/optimizer/scheduler는 전혀 필요 없다.
+- 범위: 이 함수는 "모델 forward + 역정규화(unnormalize)"까지만 수행하는 골격이다. FC/GMM
+  파라미터로부터 실제 스펙트럼 곡선을 재구성하는 것(`spectrum.physics.spectrum_fc`/
+  `spectrum_gmm` 적용)은 PRD 비목표("실제 프로덕션 추론 서비스"는 아님)에 따라 이번 골격의
+  범위 밖으로 두고, 호출자가 필요하면 직접 조합하도록 남긴다.
+- 테스트 계획: `tests/refactor/test_inference_skeleton.py` — 아직 없는 `common.inference`를
+  import하여 `ModuleNotFoundError`로 실패 확인 (RED). `task_mean=0, task_std=1`(무정규화)로
+  호출하면 세 모델 모두 Step 1의 raw forward golden과 정확히 같아야 한다.
+
 ---
 
 ## 각 Step 공통 체크리스트 (CLAUDE.md 재확인용)
