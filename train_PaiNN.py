@@ -6,7 +6,6 @@ import subprocess
 import time
 import torch
 import numpy as np
-from torch_geometric.loader import DataLoader
 from torch_scatter import scatter_mean
 
 import os
@@ -15,16 +14,15 @@ from pathlib import Path
 from contextlib import suppress
 from timm.utils import NativeScaler
 
-from dataset.IrDB import IrDB, PtDB
 from optim_factory import create_optimizer
 from logger import FileLogger
 
 from engine import train_one_step, evaluate, compute_stats
 from torch.optim.lr_scheduler import LambdaLR
 from common.adapters import painn_adapter
+from common.data import build_dataloaders, load_dataset_splits
 from common.training_utils import (
     build_spectrum_targets,
-    load_split_from_npz,
     save_pred,
     warmup_exponential_decay,
 )
@@ -124,31 +122,10 @@ def main(args):
     np.random.seed(args.seed)
     
     ''' Dataset '''
-    if args.data_path.startswith('IrDB'):
-        dataset = IrDB(root=args.data_path, dataset_arg=args.targets)
-    elif args.data_path.startswith('PtDB'):
-        dataset = PtDB(root=args.data_path, dataset_arg=args.targets)
-    else:
-        raise Exception("data_path must be start 'IrDB' or 'PtDB'")
-
-    idx_train, idx_val, idx_test = load_split_from_npz(args.split_index_npz)
-    train_dataset = dataset[idx_train]
-    val_dataset = dataset[idx_val]
-    test_dataset = dataset[idx_test]
-
-    # calculate dataset stats
-    task_mean = [0.0 for _ in args.targets]
-    task_std = [1.0 for _ in args.targets]
-    if args.standardize:
-        task_mean = [train_dataset.mean(i) for i in train_dataset.label_idx]
-        task_std = [train_dataset.std(i) for i in train_dataset.label_idx]
+    train_dataset, val_dataset, test_dataset, task_mean, task_std = load_dataset_splits(args)
     _log.info('Training set mean: {}, std:{}'.format(
         ' '.join(map(str, task_mean)), ' '.join(map(str, task_std))))
-    
-    # since dataset needs random 
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
-    
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     task_mean = torch.tensor(task_mean).to(device)
@@ -184,20 +161,8 @@ def main(args):
         raise ValueError
 
     ''' Data Loader '''
-    if args.distributed:
-        sampler_train = torch.utils.data.DistributedSampler(
-                train_dataset, num_replicas=utils.get_world_size(), rank=utils.get_rank(), shuffle=True
-            )
-        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, 
-            sampler=sampler_train, num_workers=args.workers, pin_memory=args.pin_mem, 
-            drop_last=True)
-    else:
-        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, 
-            shuffle=True, num_workers=args.workers, pin_memory=args.pin_mem, 
-            drop_last=True)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size)
-    test_loader = DataLoader(test_dataset, batch_size=args.batch_size)
-    
+    train_loader, val_loader, test_loader = build_dataloaders(args, train_dataset, val_dataset, test_dataset)
+
     ''' Compute stats '''
     if args.compute_stats:
         compute_stats(train_loader, max_radius=args.radius, logger=_log, print_freq=args.print_freq)
