@@ -134,18 +134,24 @@ loss, workers, pin-mem, 분산학습 인자 등)를 공통 모듈로 추출한�
   (`train_PaiNN.py:358-373` / `train_Equiformer.py:297-314`에서 거의 동일하게 반복되는 부분).
 
 **완료 조건:**
-- [ ] 공통 config/타겟 생성 로직이 단일 모듈(예: `common/spectrum_targets.py` — 정확한 위치는
-      G5 라이센스 경계를 지키는 선에서 결정. `spectrum/`이 아닌 위치에 둔다)에 존재.
-- [ ] `train_PaiNN.py`, `train_Equiformer.py`가 이를 import해서 사용, 중복 코드 삭제.
-- [ ] Step 1의 characterization test 재실행 통과 (동일 CLI 인자로 동일 target list/동일 동작).
+- [x] 공통 config/타겟 생성 로직이 단일 모듈(`common/training_utils.py`)에 존재.
+- [x] `train_PaiNN.py`, `train_Equiformer.py`가 이를 import해서 사용, 중복 코드 삭제.
+- [x] Step 1의 characterization test 재실행 통과 (23 passed) + PaiNN CLI 스모크 테스트로
+      Step 0과 완전히 동일한 수치(Training set mean/std, val/test MAE·loss) 확인.
 
-**이번 TDD 사이클 (RED):**
+**이번 TDD 사이클 (완료):**
 - 목표: `load_split_from_npz`, `save_pred`, `warmup_exponential_decay`, 그리고
   `train_PaiNN.py`/`train_Equiformer.py`의 `__main__`에 중복된 spectrum-type→target list
   생성 로직(`build_spectrum_targets`로 명명)을 `common/training_utils.py`로 이동한다.
 - 범위: 이 4개 함수의 이동만. `--dataset-root`/`--data-path` 등 인자 이름 통일은 포함하지 않는다.
-- 테스트 계획: `tests/refactor/test_common_training_utils.py` — 아직 없는
-  `common.training_utils` 모듈을 import하여 RED 확인 완료 (`ModuleNotFoundError`).
+- RED: `tests/refactor/test_common_training_utils.py` — 아직 없는 `common.training_utils`
+  모듈을 import하여 `ModuleNotFoundError`로 실패하는 것을 확인.
+- GREEN: `common/training_utils.py`에 4개 함수를 그대로(값 변경 없이) 옮겨 구현, 10개 테스트 통과.
+- REVIEW: `train_PaiNN.py`/`train_Equiformer.py`에서 중복 정의 삭제 후 `common.training_utils`
+  import로 교체, `__main__`의 spectrum-type 분기 18줄을 `build_spectrum_targets` 호출 1줄로 교체.
+  더 이상 쓰이지 않게 된 `import pandas as pd`도 함께 제거(같은 이동의 직접적 귀결이라 범위 내로 판단).
+  Step 1 오라클 23개 + Step 2 신규 10개 테스트 모두 통과, PaiNN CLI 스모크 테스트로 Step 0과
+  동일한 수치 재확인.
 
 ---
 

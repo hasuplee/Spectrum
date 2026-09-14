@@ -25,10 +25,15 @@ from logger import FileLogger
 from engine import train_one_step, evaluate, compute_stats
 from torch.optim.lr_scheduler import LambdaLR
 from fairchem.core.models.painn.painn import PaiNN as _PaiNN
+from common.training_utils import (
+    build_spectrum_targets,
+    load_split_from_npz,
+    save_pred,
+    warmup_exponential_decay,
+)
 
 # distributed training
 import utils as utils
-import pandas as pd
 from spectrum.write import save_spectrum
 
 class OneBatchLoader:
@@ -176,26 +181,6 @@ def get_args_parser():
     parser.add_argument('--beta', type=float, default=2.0)
 
     return parser
-
-def load_split_from_npz(path):
-    if not os.path.exists(path):
-        raise Exception(f"npz file {path} is not exist")
-    data = np.load(path)
-    idx_train = data['idx_train']
-    idx_val = data['idx_val']
-    idx_test = data['idx_test']
-    return idx_train.tolist(), idx_val.tolist(), idx_test.tolist()
-
-def warmup_exponential_decay(step: int, hparams):
-    alpha = min( 1.0, float(step)/float(hparams.lr_warmup_steps) )
-    lr_scale = hparams.lr_warmup_factor * (1.0-alpha) + alpha
-    lr_exp = hparams.decay_rate**(step/hparams.decay_step)
-    return lr_scale * lr_exp
-
-def save_pred(preds, ids, wrt_file, col_names):
-    preds_df = pd.DataFrame(preds, columns=col_names)
-    preds_df.insert(0, "molecule_id", ids)
-    preds_df.to_csv(wrt_file, index=False)
 
 def main(args):
 
@@ -354,25 +339,8 @@ def main(args):
 if __name__ == "__main__":
     
     parser = argparse.ArgumentParser('Training PaiNN', parents=[get_args_parser()])
-    args = parser.parse_args()  
-    if args.spectrum_type == 'Naive':
-        args.targets = [f'y{i}' for i in range(800)]
-        args.standardize = False
-    elif args.spectrum_type == 'GMM':
-        args.targets = ['A2','A3','B1','B2','B3','C1','C2','C3']
-        args.standardize = True
-    elif args.spectrum_type == 'FC':
-        args.targets = ['S1','S2','S3','C','E0','h1','h2','h3']
-        if args.n_mode != 3:
-            args.targets = []
-            for i in range(1, args.n_mode+1):
-                args.targets.append(f'S{i}({args.n_mode})')
-            args.targets += [f'C({args.n_mode})',f'E0({args.n_mode})']
-            for i in range(1, args.n_mode+1):
-                args.targets.append(f'h{i}({args.n_mode})')
-        args.standardize = True
-    else:
-        raise Exception("Spectrum type Error")
+    args = parser.parse_args()
+    args.targets, args.standardize = build_spectrum_targets(args.spectrum_type, args.n_mode)
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     print (args.targets)
