@@ -139,6 +139,14 @@ loss, workers, pin-mem, 분산학습 인자 등)를 공통 모듈로 추출한�
 - [ ] `train_PaiNN.py`, `train_Equiformer.py`가 이를 import해서 사용, 중복 코드 삭제.
 - [ ] Step 1의 characterization test 재실행 통과 (동일 CLI 인자로 동일 target list/동일 동작).
 
+**이번 TDD 사이클 (RED):**
+- 목표: `load_split_from_npz`, `save_pred`, `warmup_exponential_decay`, 그리고
+  `train_PaiNN.py`/`train_Equiformer.py`의 `__main__`에 중복된 spectrum-type→target list
+  생성 로직(`build_spectrum_targets`로 명명)을 `common/training_utils.py`로 이동한다.
+- 범위: 이 4개 함수의 이동만. `--dataset-root`/`--data-path` 등 인자 이름 통일은 포함하지 않는다.
+- 테스트 계획: `tests/refactor/test_common_training_utils.py` — 아직 없는
+  `common.training_utils` 모듈을 import하여 RED 확인 완료 (`ModuleNotFoundError`).
+
 ---
 
 ## Step 3 — Model Construction 분리 (G3: Registry/Adapter) [신규 인터페이스]
