@@ -178,6 +178,18 @@ loss, workers, pin-mem, 분산학습 인자 등)를 공통 모듈로 추출한�
 - [ ] Step 1 오라클 대비 model construction(parameter 이름/shape) 및 forward output 동일함을
       회귀 테스트로 확인.
 
+**이번 TDD 사이클 (RED):**
+- 목표: `common/adapters/{painn,equiformer,geoformer}_adapter.py` + `common/adapters/__init__.py`의
+  `ADAPTERS`/`get_adapter()` registry를 추가한다. 각 adapter는 `build(args) -> nn.Module`과
+  `forward(model, batch) -> Tensor`를 제공한다.
+- 범위: adapter 모듈 신설과 registry만. `train_PaiNN.py`/`train_Equiformer.py`가 이 adapter를
+  사용하도록 배선하는 것은 REVIEW에서 한다 (Step 7 "Training Step 공통화"가 engine.py 쪽 배선을
+  마저 담당하므로, 여기서는 train_XXX.py의 모델 생성 줄만 adapter 호출로 교체한다).
+- 테스트 계획: `tests/refactor/test_model_adapters.py` — 아직 없는 `common.adapters` 모듈을
+  import하여 `ModuleNotFoundError`로 실패하는 것을 확인 (RED). 각 adapter의 forward 출력이
+  Step 1 golden(`painn_forward_output`/`equiformer_forward_output`/`geoformer_forward_output`)과
+  정확히 같은지도 함께 검증한다.
+
 ---
 
 ## Step 4 — Physics Module 정리 (spectrum 내부 전용) [구조 이동]
