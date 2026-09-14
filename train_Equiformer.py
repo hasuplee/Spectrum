@@ -14,14 +14,13 @@ from pathlib import Path
 from contextlib import suppress
 from timm.utils import NativeScaler
 
-import Equiformer
-from Equiformer import model_entrypoint
 from dataset.IrDB import IrDB, PtDB
 from optim_factory import create_optimizer
 from logger import FileLogger
 
 from engine import train_one_step, evaluate, compute_stats
 from torch.optim.lr_scheduler import LambdaLR
+from common.adapters import equiformer_adapter
 from common.training_utils import (
     build_spectrum_targets,
     load_split_from_npz,
@@ -158,14 +157,10 @@ def main(args):
     norm_factor = [task_mean, task_std]
     
     ''' Network '''
-    create_model = model_entrypoint(args.model_name)
-    model = create_model(irreps_in=args.input_irreps, 
-        radius=args.radius, num_basis=args.num_basis, 
-        out_channels=len(args.targets), 
-        task_mean=task_mean, 
-        task_std=task_std, 
-        atomref=None, #train_dataset.atomref(args.target),
-        drop_path=args.drop_path)
+    args.out_channels = len(args.targets)
+    args.task_mean = task_mean
+    args.task_std = task_std
+    model = equiformer_adapter.build(args)
     _log.info(model)
     model = model.to(device)
     

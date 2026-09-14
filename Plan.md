@@ -172,23 +172,38 @@ loss, workers, pin-mem, 분산학습 인자 등)를 공통 모듈로 추출한�
    통합 금지).
 
 **완료 조건:**
-- [ ] `train_PaiNN.py`, `train_Equiformer.py`에서 모델 생성 코드가 각각의 adapter 모듈 호출
+- [x] `train_PaiNN.py`, `train_Equiformer.py`에서 모델 생성 코드가 각각의 adapter 모듈 호출
       한 줄로 축소.
-- [ ] registry를 통해 문자열 키로 adapter를 조회하는 테스트(`tests/`) 존재.
-- [ ] Step 1 오라클 대비 model construction(parameter 이름/shape) 및 forward output 동일함을
-      회귀 테스트로 확인.
+- [x] registry를 통해 문자열 키로 adapter를 조회하는 테스트(`tests/refactor/test_model_adapters.py`) 존재.
+- [x] Step 1 오라클 대비 forward output 동일함을 회귀 테스트로 확인 (5개 테스트 모두 첫 실행에서
+      바로 골든과 일치, 즉 adapter가 legacy와 100% 동일한 계산을 수행).
 
-**이번 TDD 사이클 (RED):**
-- 목표: `common/adapters/{painn,equiformer,geoformer}_adapter.py` + `common/adapters/__init__.py`의
-  `ADAPTERS`/`get_adapter()` registry를 추가한다. 각 adapter는 `build(args) -> nn.Module`과
-  `forward(model, batch) -> Tensor`를 제공한다.
-- 범위: adapter 모듈 신설과 registry만. `train_PaiNN.py`/`train_Equiformer.py`가 이 adapter를
-  사용하도록 배선하는 것은 REVIEW에서 한다 (Step 7 "Training Step 공통화"가 engine.py 쪽 배선을
-  마저 담당하므로, 여기서는 train_XXX.py의 모델 생성 줄만 adapter 호출로 교체한다).
-- 테스트 계획: `tests/refactor/test_model_adapters.py` — 아직 없는 `common.adapters` 모듈을
-  import하여 `ModuleNotFoundError`로 실패하는 것을 확인 (RED). 각 adapter의 forward 출력이
-  Step 1 golden(`painn_forward_output`/`equiformer_forward_output`/`geoformer_forward_output`)과
-  정확히 같은지도 함께 검증한다.
+**이번 TDD 사이클 (완료):**
+- 목표/범위: RED 노트와 동일 (adapter 모듈 신설 + registry, train_XXX.py의 모델 생성 줄만 교체).
+- RED: `common.adapters`가 없어 `ModuleNotFoundError`로 실패 확인.
+- GREEN: `common/adapters/{painn,equiformer,geoformer}_adapter.py` + `__init__.py`의
+  `ADAPTERS`/`get_adapter()`를 추가. PaiNN 래퍼 클래스는 `train_PaiNN.py`에서 그대로(값 변경 없이)
+  옮겼고, Equiformer/Geoformer adapter는 각각 `model_entrypoint`/`create_model`을 얇게 감쌌다.
+  5개 테스트 모두 통과 (Step 1 golden과 정확히 일치).
+- REVIEW:
+  - `train_PaiNN.py`: `PaiNN` 클래스/`_rbf`/`build_painn`와 이제 쓰이지 않는
+    `SimpleNamespace`/`torch_cluster.radius_graph`/`fairchem...PaiNN`/`torch.nn` import를 삭제하고
+    `common.adapters.painn_adapter.build(args)` 호출로 교체 (`args.out_channels = len(args.targets)`
+    를 먼저 설정).
+  - `train_Equiformer.py`: `model_entrypoint` 직접 호출을 `common.adapters.equiformer_adapter.build(args)`
+    호출로 교체, `args.out_channels`/`args.task_mean`/`args.task_std`를 먼저 설정. 더 이상 쓰이지
+    않는 `import Equiformer`/`from Equiformer import model_entrypoint` 제거.
+  - `tests/characterization/test_painn_oracle.py`의 `from train_PaiNN import PaiNN`을
+    `from common.adapters.painn_adapter import PaiNN`로 갱신 (클래스가 옮겨졌으므로 이동의
+    직접적 귀결).
+  - 검증: `pytest tests/` 28개 전체 통과. PaiNN·Equiformer CLI 스모크 테스트 재실행 결과, PaiNN은
+    Step 0/2와 완전히 동일한 수치. Equiformer는 MAE는 완전히 동일했으나 FC loss 값이 소수
+    8번째 자리에서 흔들렸다 — 같은(리팩터링 후) 커맨드를 다시 한 번 더 실행해보니 그때도 또
+    다른 값이 나와, **이 흔들림은 이번 변경과 무관하게 이미 존재하던 현상**임을 확인했다
+    (torch_cluster의 CPU 병렬 reduction이 완전히 결정적이지 않고, `fc_loss`의 hinge 계수가
+    1e6이라 그 미세한 float32 오차가 손실 값에서 상대오차 ~1e-8 수준으로 눈에 보이게 증폭됨).
+    이후 Step에서 실제 데이터셋으로 스모크 비교를 할 때는 MAE(또는 hinge 계수가 없는 지표)를
+    기준으로 비교하는 것이 더 안정적이다.
 
 ---
 

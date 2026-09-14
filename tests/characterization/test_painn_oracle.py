@@ -8,7 +8,7 @@ synthetic batch, and pin their numeric output as a regression oracle.
 import torch
 
 from engine import evaluate, train_one_step
-from train_PaiNN import PaiNN
+from common.adapters.painn_adapter import PaiNN
 from tests.support.golden import assert_matches_golden, assert_matches_golden_json
 from tests.support.tiny_batches import make_tiny_pyg_batch, n_mode_target_count
 
