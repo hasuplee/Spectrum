@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 import pandas as pd
-from spectrum.loss import spectrum_gmm, spectrum_fc
+from spectrum.physics import spectrum_gmm, spectrum_fc
 
 # SPDX-License-Identifier: LicenseRef-Proprietary
 # Copyright (c) 2025 Hasup Lee. All rights reserved.

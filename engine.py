@@ -4,7 +4,7 @@ from timm.utils import accuracy, dispatch_clip_grad
 import time
 from torch_cluster import radius_graph
 import torch_geometric
-from spectrum.loss import gmm_loss, fc_loss
+from spectrum.physics import gmm_loss, fc_loss
 import numpy as np
 import itertools
 

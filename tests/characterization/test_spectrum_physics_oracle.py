@@ -7,7 +7,7 @@ can be verified to be behavior-preserving.
 
 import torch
 
-from spectrum.loss import fc_loss, gmm_loss
+from spectrum.physics import fc_loss, gmm_loss
 from tests.support.golden import assert_matches_golden
 
 NUM_X = 20

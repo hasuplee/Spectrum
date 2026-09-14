@@ -11,7 +11,7 @@ import os
 import numpy as np
 import pandas as pd
 import itertools
-from spectrum.loss import gmm_loss, fc_loss
+from spectrum.physics import gmm_loss, fc_loss
 from spectrum.write import save_spectrum
 
 def warmup_exponential_decay(step: int, hparams):

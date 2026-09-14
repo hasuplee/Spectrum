@@ -2,7 +2,7 @@
 
 Geoformer is driven through PyTorch Lightning (geoformer/module.py's LNNP) in
 production, but its actual numerics live in
-geoformer.model.modeling_geoformer.create_model + spectrum.loss.fc_loss,
+geoformer.model.modeling_geoformer.create_model + spectrum.physics.fc_loss,
 exactly like LNNP.forward / LNNP.spectrum_step call them (geoformer/module.py:87-164).
 These tests call that same core computation directly against a tiny synthetic
 batch, without going through Lightning's Trainer, and pin the numeric output
@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import torch
 
 from geoformer.model.modeling_geoformer import create_model
-from spectrum.loss import fc_loss
+from spectrum.physics import fc_loss
 from tests.support.golden import assert_matches_golden, assert_matches_golden_json
 from tests.support.tiny_batches import make_tiny_geoformer_batch, n_mode_target_count
 

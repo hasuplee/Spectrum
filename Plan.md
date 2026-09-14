@@ -223,22 +223,23 @@ loss, workers, pin-mem, 분산학습 인자 등)를 공통 모듈로 추출한�
   변경하지 않고 import 문만 갱신한다.**
 
 **완료 조건:**
-- [ ] `spectrum/loss.py`의 함수가 새 위치로 이동, import처 갱신.
-- [ ] Step 1의 physics 오라클 테스트가 새 import 경로로도 동일 수치 반환.
-- [ ] `git diff`에 `spectrum/` 외부 폴더의 로직 변경이 없고 import 문 변경만 존재함을 확인.
+- [x] `spectrum/loss.py`의 함수가 새 위치로 이동, import처 갱신.
+- [x] Step 1의 physics 오라클 테스트가 새 import 경로로도 동일 수치 반환.
+- [x] `git diff`에 `spectrum/` 외부 폴더의 로직 변경이 없고 import 문 변경만 존재함을 확인.
 
-**이번 TDD 사이클 (RED):**
-- 목표: `spectrum/loss.py` → `spectrum/physics/{common,fc,gmm}.py` + `spectrum/physics/__init__.py`
-  (기존 `spectrum.loss`의 공개 API `fc_loss`/`gmm_loss`/`spectrum_fc`/`spectrum_gmm`을
-  `spectrum.physics`에서 그대로 재노출). 실제 사용처(`engine.py`, `geoformer/module.py`,
-  `spectrum/write.py`, 테스트 2개)의 import 문을 `spectrum.loss` → `spectrum.physics`로 갱신.
-  기존 `spectrum/loss.py`는 삭제한다(별도 호환 shim을 남기지 않는다).
-- 범위: import 경로 이동만. `train_PaiNN.py`/`train_Equiformer.py`는 `spectrum.loss`를 직접
-  import하지 않으므로(항상 `engine.py`를 거침) 변경 대상이 아님을 grep으로 확인.
-- 테스트 계획: `tests/refactor/test_spectrum_physics_relocated.py` — 아직 없는 `spectrum.physics`를
-  import하여 `ModuleNotFoundError`로 실패 확인 (RED). Step 1과 동일한 고정 입력으로 같은 golden
-  (`fc_loss_value`/`gmm_loss_value`/`fc_loss_value_mse_lorentzian`)과 비교해 새 위치가 legacy와
-  수치적으로 동일함을 검증한다.
+**이번 TDD 사이클 (완료):**
+- RED: `tests/refactor/test_spectrum_physics_relocated.py`로 `spectrum.physics`가 없어
+  `ModuleNotFoundError`로 실패 확인.
+- GREEN: `spectrum/physics/{common,fc,gmm}.py` + `__init__.py`(재노출)를 추가, 로직/상수는
+  `spectrum/loss.py`에서 그대로 옮김. 3개 테스트 모두 Step 1 golden과 즉시 일치.
+- REVIEW: `engine.py`, `geoformer/module.py`, `spectrum/write.py`, 두 characterization 테스트의
+  `from spectrum.loss import ...`를 `from spectrum.physics import ...`로 교체(로직은 손대지 않음).
+  `train_PaiNN.py`/`train_Equiformer.py`는 `spectrum.loss`를 직접 import하지 않음을 grep으로
+  재확인(변경 없음). `spectrum/loss.py` 삭제, 그리고 Step 1 오라클과 완전히 중복이 된
+  `test_spectrum_physics_relocated.py`도 함께 삭제(같은 것을 같은 golden으로 두 번 검증할
+  이유가 없어짐 — 영구 오라클은 `test_spectrum_physics_oracle.py` 하나로 유지).
+  검증: `pytest tests/` 28개 전체 통과, PaiNN CLI 스모크 테스트가 Step 0/2/3과 완전히 동일한
+  수치. `git diff` 확인 결과 `spectrum/` 외부 파일은 import 문 한 줄씩만 바뀌었다.
 
 ---
 
