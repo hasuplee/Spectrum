@@ -324,9 +324,18 @@ Inference 분리)의 기반을 만든다.
   공통화되어 있으므로 구조는 유지하되, 위치만 필요 시 정리한다.
 
 **완료 조건:**
-- [ ] `train_one_step()`이 특정 모델의 forward 시그니처에 더 이상 직접 결합되지 않음
+- [x] `train_one_step()`이 특정 모델의 forward 시그니처에 더 이상 직접 결합되지 않음
       (adapter를 통해서만 호출).
-- [ ] Step 1 오라클 대비 1 step 학습 후 loss/gradient/parameter 값 동일.
+- [x] Step 1 오라클 대비 1 step 학습 후 loss/gradient/parameter 값 동일.
+
+**이번 사이클 (단일 커밋 — 새 모듈 없음):**
+Step 6에서 이미 만든 `predict_batch`/`compute_spec_loss` 헬퍼(내부적으로
+`common.adapters._shared.engine_style_forward` 사용)를 `train_one_step()`도 그대로
+재사용하도록 배선만 바꿨다. 새로운 인터페이스가 생기지 않는 순수 배선 교체이므로,
+별도의 실패 테스트를 새로 만들지 않고 Step 1의 기존 golden 테스트
+(`test_PaiNN_1스텝_학습후_...`/`test_Equiformer_1스텝_학습후_...`)가 계속 GREEN을
+유지하는지로 검증했다 (34개 테스트 전체 통과 + PaiNN CLI 스모크 테스트 수치 불변).
+RED/REVIEW로 나눌 대상이 없어 한 커밋으로 처리한다.
 
 ---
 
