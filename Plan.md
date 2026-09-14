@@ -227,6 +227,19 @@ loss, workers, pin-mem, 분산학습 인자 등)를 공통 모듈로 추출한�
 - [ ] Step 1의 physics 오라클 테스트가 새 import 경로로도 동일 수치 반환.
 - [ ] `git diff`에 `spectrum/` 외부 폴더의 로직 변경이 없고 import 문 변경만 존재함을 확인.
 
+**이번 TDD 사이클 (RED):**
+- 목표: `spectrum/loss.py` → `spectrum/physics/{common,fc,gmm}.py` + `spectrum/physics/__init__.py`
+  (기존 `spectrum.loss`의 공개 API `fc_loss`/`gmm_loss`/`spectrum_fc`/`spectrum_gmm`을
+  `spectrum.physics`에서 그대로 재노출). 실제 사용처(`engine.py`, `geoformer/module.py`,
+  `spectrum/write.py`, 테스트 2개)의 import 문을 `spectrum.loss` → `spectrum.physics`로 갱신.
+  기존 `spectrum/loss.py`는 삭제한다(별도 호환 shim을 남기지 않는다).
+- 범위: import 경로 이동만. `train_PaiNN.py`/`train_Equiformer.py`는 `spectrum.loss`를 직접
+  import하지 않으므로(항상 `engine.py`를 거침) 변경 대상이 아님을 grep으로 확인.
+- 테스트 계획: `tests/refactor/test_spectrum_physics_relocated.py` — 아직 없는 `spectrum.physics`를
+  import하여 `ModuleNotFoundError`로 실패 확인 (RED). Step 1과 동일한 고정 입력으로 같은 golden
+  (`fc_loss_value`/`gmm_loss_value`/`fc_loss_value_mse_lorentzian`)과 비교해 새 위치가 legacy와
+  수치적으로 동일함을 검증한다.
+
 ---
 
 ## Step 5 — Data Layer 분리 [구조 이동]
