@@ -284,6 +284,27 @@ Step 0은 환경 세팅, Step 1~7은 `.claude/TDD/SKILL.md`의 RED → GREEN →
 - 완료 조건(REVIEW 종료 시): 신규 5개 + 기존 77개 통과, 실제 Geoformer ckpt(위 tiny 학습 산출물, `epoch=*.ckpt`와 `last.ckpt` 모두)를 로드해 test split 103개를
   예측하고 학습 스크립트가 만든 `p.csv`/`p_spec.csv`와 비교, `geoformer/`·`train_Geoformer.py` 변경 없음.
 
+- **완료 결과 (Step 2D 종료)**
+  - RED(`5481b3a`): 5개가 `ValueError: Unsupported base_model: 'Geoformer'`로 실패. GREEN(`ea91ef8`): 모델별 로더(`_CHECKPOINT_LOADERS`)로 분리하고
+    Geoformer 추가(`hyper_parameters` dict → `Namespace`, `spec_loss_type` → `spectrum_type`, `model.` 접두사 제거, 기본 `norm_factor` `[0, 1]`).
+    신규 5개 + 2B/2C 10개 통과, 전체 82개 통과.
+  - REVIEW 확인 사항
+    - 스코프: Plan 범위 안. `geoformer/`, `train_Geoformer.py`, `predict()`, `spectrum/` 변경 없음(GREEN 커밋의 변경 파일은 `common/inference.py` 하나).
+      PaiNN/Equiformer는 로드 경로를 함수로 감쌌을 뿐 로직 동일(2B/2C 테스트 10개가 오라클).
+    - 실제 산출물 검증: `train_Geoformer`를 CPU tiny 설정으로 실행해 만든 **실제** Lightning ckpt(`last.ckpt`, `epoch=0-val_loss=12.1353.ckpt` 둘 다)를
+      로드해 test split 103개를 `GeoformerDataCollator`로 배치화해 예측.
+      - 분자 순서 동일, `strict=True` 로드 성공, `spectrum_type='FC'`, `norm_factor=[0, 1]`(모델 내부 역정규화).
+      - 파라미터 vs `p.csv`: 최대 절대차 3.0e-8(값 범위 2.2, 사실상 비트 동일). 곡선 vs `p_spec.csv`: 최대 절대차 6.0e-7(CSV 6자리 반올림 수준).
+        곡선 (103, 800), 유한. 두 ckpt 결과 동일(4 step 학습이라 last와 best가 같은 가중치).
+    - 리팩토링: 제안 없음(코드 변경 없음).
+  - Step 3으로 넘기는 사항
+    - registry는 Geoformer에 대해 `last.ckpt`와 `epoch=*.ckpt`를 모두 반환한다. 예측에 어느 것을 쓸지(`last` vs val_loss 최소)는 아직 정해지지 않았다 —
+      Step 3의 예측 tool에서 정책을 정한다(기본 제안: 수정 시각 최신 = `get_latest_checkpoint`).
+    - 이번 실측은 tiny 모델(로드 0.01초)이다. 기본 크기 Geoformer(9레이어, 256차원)의 로드/추론 시간은 아직 측정하지 않았다.
+    - 세 백본 모두 `load_checkpoint`/`predict_curves`로 같은 방식으로 호출할 수 있고, 입력 배치만 다르다(PaiNN/Equiformer: PyG `Batch`, Geoformer:
+      `GeoformerDataCollator` dict) — 분자 ID → 배치 변환은 모델별로 Step 3에서 구현한다.
+- **Step 2 전체 완료**: 2A(곡선 복원) → 2B(PaiNN) → 2C(Equiformer) → 2D(Geoformer). 전체 82개 테스트 통과.
+
 ## Step 3. 예측 tool (신규 인터페이스)
 - 목표: IrDB 분자(ID 또는 인덱스) → 예측 spectrum (G2).
 - 범위: `agent/tools/predict_tool.py` — `predict_spectrum(molecule_id, base_model=None, ...)`.
