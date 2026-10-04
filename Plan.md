@@ -203,8 +203,34 @@ Step 0은 환경 세팅, Step 1~7은 `.claude/TDD/SKILL.md`의 RED → GREEN →
     - 분자 ID → 배치 변환(IrDB 조회, `DataLoader`)은 Step 3에서 구현한다(이번 검증에서 쓴 방식:
       `load_dataset_splits(args)`의 test_dataset + `torch_geometric.loader.DataLoader`).
 
-### Step 2C. Equiformer (세부 계획은 2C RED에서 확정)
-- 범위(예정): ckpt `args.task_mean/std` 사용, `equiformer_adapter.build`로 재구성. Equiformer 테스트는 느리므로(약 8초/건) 최소 케이스.
+### Step 2C. Equiformer: 체크포인트 로드 (`common/inference.py` 확장)
+- 목표: Equiformer 체크포인트에서 모델을 복원하고 `load_checkpoint`/`predict_curves`가 PaiNN과 똑같이 동작하게 한다 (G2).
+- 조사 근거
+  - Equiformer ckpt(`Step 0` 실측 ckpt 확인): `{'model', 'optimizer', 'args'}`, `args`에 `model_name, input_irreps(None), radius, num_basis,
+    out_channels, drop_path, targets, standardize, spectrum_type, lineshape, beta, data_path, split_index_npz, seed` +
+    **`task_mean`/`task_std`(Tensor)**가 들어 있다(`train_Equiformer.py`가 `args.task_mean/std`를 설정한 뒤 저장). `atomref`는 없음.
+  - Equiformer 모델은 `task_mean/std`를 속성으로 저장만 하고 forward에서 쓰지 않는다 → 정규화는 PaiNN처럼 모델 밖
+    (`predict()`)에서 적용된다(이중 역정규화 없음).
+  - `equiformer_adapter.build(args)`가 `getattr(args, "task_mean", None)` 등을 읽으므로 ckpt `args`로 그대로 재구성 가능.
+  - 모델 1개 생성에 약 8초가 걸린다 → 테스트는 로드 횟수를 최소화(로드한 모델을 테스트 간에 재사용).
+- 범위
+  - 포함 (`common/inference.py`)
+    - `_CHECKPOINT_BUILDERS`에 `"Equiformer": equiformer_adapter.build` 등록.
+    - `_restore_norm_factor` 우선순위 변경: ckpt `args`에 `task_mean`/`task_std`가 **있으면 그 값을 사용**(`float32` CPU 텐서로 변환,
+      데이터셋 접근 없음) → 없으면 기존 방식(`standardize` False면 `[0, 1]`, True면 `load_dataset_splits`로 재계산).
+      PaiNN ckpt `args`에는 이 속성이 없으므로 PaiNN 동작은 그대로(2B 테스트 7개가 회귀 오라클).
+    - 오류 메시지의 지원 목록과 `load_checkpoint` docstring을 "PaiNN, Equiformer"로 갱신.
+  - 미포함: Geoformer(2D), 분자 조회(Step 3), `Equiformer/` 모델 코드와 `train_Equiformer.py` 수정, `predict()` 수정.
+- 테스트 계획 (`tests/refactor/test_inference_checkpoint_equiformer.py`; 기본 크기 Equiformer에 `num_basis=8`로 저장한 ckpt 1개를
+  모듈 범위에서 만들고, 로드는 캐시해 한 번만 수행. 새 동작 호출은 각 테스트 안에서 하여 개별 실패로 확인)
+  1. `test_Equiformer_체크포인트를_로드하면_원본_모델과_같은_출력을_낸다` (state_dict 복원 + `eval()`, `predict()` 수치 일치)
+  2. `test_Equiformer는_체크포인트_args의_task_mean_std를_norm_factor로_쓴다` (ckpt에 `standardize=True`와 존재하지 않는 split 경로를
+     넣어, 데이터셋을 읽지 않고 저장된 값을 쓴다는 것을 함께 검증)
+  3. `test_Equiformer_predict_curves는_역정규화한_파라미터로_곡선을_복원한다` (shape `(2, 800)`, 유한값, 수동 계산과 일치;
+     ckpt `args.task_mean/std`에 물리적으로 말이 되는 값을 저장)
+- RED 검증 기준: 3개 모두 `ValueError: Unsupported base_model: 'Equiformer'`(기능 부재)로 실패. 기존 74개는 영향 없이 통과.
+- 완료 조건(REVIEW 종료 시): 위 3개 + 기존 74개 통과, Step 0 smoke의 실제 Equiformer ckpt(`train_Equiformer`가 만든 것, 기본 모델 크기)로
+  test split 103개를 예측해 학습 스크립트의 `pred.csv`/`p_spec.csv`와 비교, `Equiformer/`·`train_Equiformer.py` 변경 없음.
 
 ### Step 2D. Geoformer (세부 계획은 2D RED에서 확정)
 - 범위(예정): Lightning ckpt의 `state_dict`에서 `model.` 접두사 제거, `hyper_parameters`로 모델 재구성,
