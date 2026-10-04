@@ -815,9 +815,69 @@ Step 0은 환경 세팅, Step 1~7은 `.claude/TDD/SKILL.md`의 RED → GREEN →
       (예: 사용자가 "응"이면 이력에서 마지막 `preview_training` 호출의 인자를 찾아 `start_training_confirmed`로 그대로 전달).
     - 데모 서버는 진짜 LLM이 아님을 문서와 출력에 표시하고, `agent/demo/`로 분리한다. 같은 서버로 다중 턴 시나리오 테스트를 구동한다. 선택적 `vllm` 마커 테스트는 `VLLM_BASE_URL`이 있을 때만 실행.
 
-### Step 5C-2. 규칙 기반 데모 서버 + 실제 LLM 연결 테스트 (세부 계획은 5C-2 RED에서 확정)
-- 범위(예정): `agent/demo/mock_llm_server.py`(키워드 규칙으로 tool 호출을 흉내 내는 OpenAI 호환 서버, 진짜 LLM이 아님을 명시), `python -m agent.demo`(서버 + 채팅), 이 서버로 구동하는 다중 턴 시나리오 테스트,
-  `vllm` 마커 선택 테스트(`VLLM_BASE_URL` 없으면 skip).
+### Step 5C-2. 규칙 기반 데모 서버 + 실제 LLM 연결 선택 테스트
+- 목표: LLM 키·서버 없이 Agent 전체(가드, tool, 학습 확인 절차, 백그라운드 학습, 예측 요약)를 **직접 채팅으로** 확인할 수 있게 하고, 같은 서버로 다중 턴 시나리오를 구동해 검증한다. 진짜 LLM 연결용 선택 테스트(`vllm` 마커)를 둔다 (G3, G5).
+- 조사 근거 (agno 3.1.1, 로컬 실험)
+  - AGNO는 이전 턴의 `assistant(tool_calls)`와 `tool` 결과를 다음 요청에 모두 싣는다 → 데모 서버는 **상태 없이** 메시지 이력만으로 대화 맥락(대기 중인 미리보기, 직전 질문)을 알 수 있다.
+  - 요청의 `tool` 메시지 `content`는 JSON이 아니라 **Python 표현 문자열**(`{'status': 'needs_confirmation', 'will_overwrite': True, 'return_code': None, ...}`)이다.
+    `json.loads`는 실패하고 `ast.literal_eval`은 한글·따옴표·줄바꿈·`True`/`None`을 정상 파싱한다. 반면 `assistant`의 `tool_calls[].function.arguments`는 JSON 문자열이다.
+  - AGNO는 기본적으로 비스트리밍 요청을 보내므로 서버는 `/v1/chat/completions`의 일반 JSON 응답만 지원하면 된다.
+- 범위
+  - 포함
+    - `agent/demo/mock_llm.py`
+      - `respond(messages) -> dict`: **순수 함수**(HTTP 없음). OpenAI chat completion 형식의 응답(텍스트 `finish_reason="stop"` 또는 `tool_calls` `finish_reason="tool_calls"`)을 돌려준다.
+        현재 턴(마지막 `user` 메시지 이후)의 tool 호출/결과 진행 상황과 이력을 보고 다음 행동을 정한다. 모든 텍스트 응답은 `"[데모] "`로 시작해 진짜 LLM으로 오해하지 않게 한다.
+      - `MockLLMServer`: `respond`를 `/v1/chat/completions`로 서비스하는 로컬 HTTP 서버(컨텍스트 매니저, `base_url`, 받은 `requests` 기록, 포트 0이면 자동 할당).
+    - 대화 규칙 (키워드 기반, 의도는 현재 메시지 + 이력으로 판정, 위에서부터 우선):
+      1. **동의**("응/네/예/좋아/그래/진행해줘/시작해줘/ok/yes")이고 이력에 **대기 중인 미리보기**(마지막 `preview_training` 결과가 `needs_confirmation`이고 그 뒤에 `start_training_confirmed` 호출이 없음)가 있으면
+         → 같은 인자로 `start_training_confirmed`(미리보기의 `will_overwrite`가 true였으면 `overwrite=True`). 결과(`started`/`already_trained`/`busy`/`not_previewed`)를 `message`와 함께 안내.
+      2. **거부**("아니/취소/그만/멈춰")이고 대기 중인 미리보기가 있으면 → 학습을 시작하지 않고 취소를 안내(tool 호출 없음).
+      3. **학습 + 모델 이름**(PaiNN/Geoformer/Equiformer) → `show_training_defaults` → `preview_training`(문장의 "N step"→`train_steps`, "배치 N"→`batch_size`를 `settings`로) → 최종 설정을 보여 주고 "진행할까요?"
+         (`will_overwrite`면 기존 결과 삭제 경고 포함).
+      4. **학습, 모델 이름 없음** → "PaiNN, Geoformer, Equiformer 중 무엇으로 학습할까요?"; 직전 assistant 메시지가 이 질문이고 사용자가 모델 이름만 답하면 3으로 이어간다.
+      5. **상태/끝났/진행 상황/로그** → `check_training_status` → `running`/`finished`(체크포인트 유무)/`failed`(로그 마지막 줄) 요약.
+      6. **예측/스펙트럼 + 분자 ID**(`cn1_cn1_nn1` 형태) → `predict_molecule_spectrum` → 성공이면 피크 파장과 샘플 강도 요약, `needs_training`이면 "먼저 학습이 필요하다"고 학습 제안, 오류면 `message` 전달.
+         ID가 없으면 `list_molecule_ids(limit=5)`로 예시 ID를 안내.
+      7. **분자 목록/어떤 분자** → `list_molecule_ids`; **학습된 모델** → `list_trained_models`; **기본값/설정 + 모델** → `show_training_defaults`(모델 없으면 모델을 되묻기).
+         ※ `기본값`이나 `설정`에 `보여/알려`가 붙은 **조회 질문**("PaiNN 학습 기본값 보여줘")은 "학습 + 모델 이름"(3)보다 우선한다 — 기본값만 알려 주고 미리보기로 이어가지 않는다(테스트 작성 중 규칙 충돌을 발견해 확정).
+      8. **뭘 할 수 있어/도움/사용법** → 가능한 일 안내.
+      9. 그 외 → "이해하지 못했어요. 데모 서버는 규칙 기반이라 정해진 표현만 알아듣습니다"와 예시.
+    - `agent/demo/__main__.py`: `python -m agent.demo [--port N] [--serve-only]`. 기본은 서버를 띄우고 그 서버에 연결된 Agent(`build_agent`)로 콘솔 채팅(종료: `종료`/`exit`/`quit`),
+      시작 시 **"데모 모드: 진짜 LLM이 아닌 규칙 기반 가짜 서버입니다"** 배너를 출력. `--serve-only`는 서버만 실행(Step 6 UI나 다른 클라이언트가 `VLLM_BASE_URL=http://127.0.0.1:<port>/v1`로 연결).
+    - 실제 LLM 연결 선택 테스트: `@pytest.mark.vllm`, `VLLM_BASE_URL`(과 `VLLM_MODEL`)이 없으면 skip.
+  - 미포함: UI(Step 6), 진짜 LLM 품질 평가, 스트리밍 응답, 규칙에 없는 표현의 유연한 이해, 데모 서버를 이용한 성능 측정. 데모 서버는 프로젝트의 정식 기능이 아니라 개발·시연 도구이며 `agent/demo/`에 분리한다.
+- 테스트 계획
+  - `tests/agent_tools/test_demo_mock_llm.py` — `respond`를 메시지 이력만으로 직접 호출(빠른 순수 함수 테스트; tool 결과 메시지는 AGNO와 같은 Python 표현 문자열로 구성)
+    1. `test_응답은_OpenAI_chat_completion_형식이다` (텍스트/tool_calls 두 경우의 `choices[0].message`, `finish_reason`, tool_call `id`/`arguments`가 JSON 문자열)
+    2. `test_모델이_정해지지_않은_학습_요청은_모델을_되묻는다`
+    3. `test_모델이_정해진_학습_요청은_기본값_조회_후_미리보기를_호출하고_확인을_묻는다` (3단계: `show_training_defaults` → `preview_training` → 확인 텍스트, `[데모]` 접두사)
+    4. `test_step_수와_배치_크기를_말하면_미리보기_설정에_반영한다`
+    5. `test_모델만_답하면_직전_모델_질문의_학습_요청으로_이어간다`
+    6. `test_사용자가_동의하면_직전_미리보기와_같은_인자로_학습을_시작한다`
+    7. `test_덮어쓰기_미리보기에는_삭제를_경고하고_동의하면_overwrite로_시작한다`
+    8. `test_거부하면_학습을_시작하지_않고_취소를_알린다`
+    9. `test_대기_중인_미리보기가_없으면_동의_표현에도_학습을_시작하지_않는다`
+    10. `test_학습_상태_질문은_상태를_조회하고_running_finished_failed를_요약한다`
+    11. `test_예측_요청은_분자_ID로_예측하고_결과_또는_학습_안내를_전달한다` (ok의 피크 파장 수치가 결과와 일치, `needs_training`이면 학습 제안)
+    12. `test_분자_ID가_없는_예측_요청은_분자_목록을_보여준다`
+    13. `test_목록_기본값_학습된_모델_질문은_해당_tool을_호출한다` (parametrize)
+    13-1. `test_기본값_조회_질문은_미리보기로_이어가지_않고_기본값만_알려준다`
+    14. `test_도움_요청은_가능한_일을_안내한다` / `test_규칙에_없는_말은_이해하지_못했다고_답한다`
+    15. `test_tool_오류_응답의_message를_사용자에게_전달한다` (`busy`, `already_trained`, `not_previewed`)
+  - `tests/agent_tools/test_demo_scenarios.py` — 실제 `build_agent` + `VLLM` + `MockLLMServer`(키 불필요), 학습은 가짜 명령
+    16. `test_대화_시나리오_모델_되묻기부터_미리보기_동의_학습_시작_상태_확인까지_이어진다` (그냥 학습해줘 → PaiNN → 미리보기 → 응 → 학습 프로세스 실제 실행 → 끝났어?)
+    17. `test_학습된_모델이_있으면_예측_시나리오가_피크_파장을_알려준다` (tiny PaiNN 체크포인트 + 실제 IrDB, 피크 파장이 `predict_spectrum`과 일치)
+    18. `test_학습된_모델이_없으면_예측_시나리오는_학습을_먼저_제안한다`
+    19. `test_이미_학습된_모델은_삭제_경고_후_동의해야_다시_학습한다`
+    20. `test_범위_밖_질문은_데모_서버를_호출하지_않고_거절된다` (서버 요청 수 0)
+  - `tests/agent_tools/test_demo_cli.py`
+    21. `test_python_m_agent_demo는_데모_배너를_출력하고_질문에_답한다` (실제 서브프로세스, stdin으로 "PaiNN 학습 기본값 보여줘"와 "종료")
+  - `tests/agent_tools/test_agent_real_llm.py` (`vllm` 마커, 환경변수 없으면 skip)
+    22. `test_실제_LLM_서버에_연결해_범위_안_질문에_응답한다` / `test_실제_LLM_서버에서도_범위_밖_질문은_가드가_거절한다`
+- RED 검증 기준: 1~21은 `agent.demo` 부재(`ModuleNotFoundError`)로 실패(순수 함수 테스트는 parametrize 포함 26 케이스, 시나리오 5개, CLI 1개), 22는 환경변수가 없어 skip(실제 LLM 연결 후에는 사용자가 직접 실행).
+  기존 219개는 영향 없이 통과. 테스트 이력은 AGNO가 실제로 보내는 메시지와 구조·형식이 같음을 구현 없이 별도로 대조했다(역할 순서, 키, `arguments` 문자열, tool 결과 `literal_eval` 파싱).
+- 완료 조건(REVIEW 종료 시): 신규 + 기존 테스트 통과, `python -m agent.demo`를 실제로 실행해 직접 대화(그냥 학습해줘 → PaiNN → 응 → 끝났어? → 예측)하며 화면 확인, 대화 규칙 표와 실제 동작 대조,
+  데모 응답이 "진짜 LLM이 아님"을 항상 표시하는지 확인, 리팩토링 필요성 검토.
 
 ## Step 6. UI (신규 인터페이스)
 - 목표: 간단한 UI에서 학습/예측 수행 (G4).
