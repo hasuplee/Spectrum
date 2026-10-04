@@ -42,9 +42,35 @@ Step 0은 환경 세팅, Step 1~7은 `.claude/TDD/SKILL.md`의 RED → GREEN →
 
 ## Step 1. 체크포인트 registry (신규 인터페이스)
 - 목표: `results_*/` 아래에서 학습된 체크포인트를 찾아 "예측 가능 여부"를 판정 (G2 전제).
-- 범위: `agent/tools/registry.py` — `find_checkpoints()`, `has_trained_model(base_model=None)`.
-  PaiNN/Equiformer는 `checkpoint_best.ckpt`, Geoformer는 `checkpoints/` 하위 ckpt 규칙.
-- 테스트(tmp_path 기반, 모델 불필요): ckpt 없음/있음/모델별 구분/최신 선택.
+- 범위: `agent/tools/registry.py`
+  - 포함
+    - `SUPPORTED_BASE_MODELS = ("PaiNN", "Equiformer", "Geoformer")`
+    - `CheckpointInfo`(dataclass: `base_model`, `path`, `modified_time`)
+    - `find_checkpoints(results_root=".", base_model=None) -> list[CheckpointInfo]` — 수정 시각 최신순 정렬.
+    - `get_latest_checkpoint(results_root=".", base_model=None) -> CheckpointInfo | None`
+    - `has_trained_model(results_root=".", base_model=None) -> bool`
+    - 지원하지 않는 `base_model`은 `ValueError`(메시지에 지원 목록 포함).
+  - 탐색 규칙(기존 학습 스크립트의 저장 경로 그대로, 코드는 읽기만 하고 수정하지 않음)
+    - PaiNN/Equiformer: `{results_root}/results_{모델}/{seed}/{fold}/checkpoint_best.ckpt`
+    - Geoformer: `{results_root}/results_Geoformer/{seed}/{fold}/checkpoints/*.ckpt` (`last.ckpt` 포함)
+  - 미포함: ckpt 내용 로드/검증(Step 2), 어떤 ckpt가 "최고 성능"인지 판정(수정 시각 기준 최신만 제공),
+    `agent/` 패키지 외 기존 코드 수정, tool 래핑/AGNO 등록(Step 3~5).
+- 테스트 계획 (`tests/agent_tools/test_registry.py`, `tmp_path`에 빈 파일로 디렉터리 구조만 만듦 — 모델/torch 불필요).
+  테스트 디렉터리 이름을 `agent_tools`로 하는 이유: `tests/agent/`로 두면 pytest가 `agent`라는 모듈 이름을
+  잡아 신규 `agent` 패키지를 가릴 수 있음.
+  1. `test_results_폴더가_없으면_체크포인트_목록이_비어있다`
+  2. `test_PaiNN_checkpoint_best를_찾는다`
+  3. `test_Equiformer_checkpoint_best를_찾는다`
+  4. `test_Geoformer_checkpoints_폴더의_ckpt를_모두_찾는다` (last.ckpt 포함)
+  5. `test_모델을_지정하면_해당_모델의_체크포인트만_반환한다`
+  6. `test_여러_체크포인트는_수정_시각_최신순으로_정렬된다` (`os.utime`으로 시각 지정)
+  7. `test_최신_체크포인트를_반환한다`
+  8. `test_체크포인트가_없으면_최신_체크포인트는_None이다`
+  9. `test_학습된_모델이_있으면_True이고_없으면_False이다` (모델 지정/미지정 각각)
+  10. `test_지원하지_않는_모델을_지정하면_ValueError가_발생한다`
+  11. `test_다른_모델의_폴더에_있는_ckpt는_무시한다` (예: `results_PaiNN`에 Geoformer 형식 파일만 있으면 PaiNN은 없음으로 판정)
+- RED 검증 기준: 모든 테스트가 `ModuleNotFoundError: agent`(기능 부재)로 실패해야 한다 (오타/설정 오류 아님).
+- 완료 조건(REVIEW 종료 시): 위 테스트 전체 통과 + 기존 46개 회귀 통과, `agent/`는 `spectrum/`을 import하지 않음.
 
 ## Step 2. `common/inference` 확장 (신규 인터페이스)
 - 목표: ckpt → 모델 재구성 → 정규화 복원 → spectrum 곡선 반환 (G2).
