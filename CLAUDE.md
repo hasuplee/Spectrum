@@ -7,9 +7,12 @@ Geoformer, PaiNN, Equiformer 세 가지 3D 분자 그래프 모델을 백본으�
 Franck-Condon(FC) 또는 Gaussian Mixture Model(GMM) 기반의 물리적 스펙트럼 복원 로직(`spectrum/`)을
 얹는 구조다.
 
-현재는 **Phase 1 리팩토링** 단계다. 목적은 성능 개선이 아니라 **구조 개선
-(behavior-preserving refactoring)** 이다. 세부 목표/비목표는 [PRD.md](PRD.md)를,
-단계별 작업 순서는 [Plan.md](Plan.md)를 따른다.
+Phase 1(구조 개선, behavior-preserving refactoring)은 완료되었다. 현재는 **Phase 2: Spectrum Agent**
+단계다. 학습/예측을 tool로 노출하고, 이를 사용하는 **AGNO 기반 Agent**(LLM은 AGNO `VLLM` 모델 클래스로
+연결)와 간단한 UI(Gradio)를 개발한다. 목적은 성능 개선이 아니라 "현재 코드를 tool로 만들고 Agent가 실제로
+동작하는가"의 검증이다. 입력 데이터는 IrDB 예시 데이터로 한정한다. 세부 목표/비목표는
+[PRD.md](PRD.md)를, 단계별 작업 순서(Step 0 환경 세팅, Step 1~7 TDD)는 [Plan.md](Plan.md)를 따른다.
+(Phase 1 문서는 git history에 있다.)
 
 ## 절대 지켜야 할 제약
 
@@ -22,7 +25,10 @@ Franck-Condon(FC) 또는 Gaussian Mixture Model(GMM) 기반의 물리적 스펙�
      import 또는 adapter를 통해서만 연결한다. 직접 로직을 복사해 넣지 않는다.
    - **애매하면 옮기지 않는다.** 판단이 서지 않는 이동은 별도로 사용자에게 확인한다.
 
-2. **No algorithmic / hyperparameter / numerical behavior change**
+2. **No algorithmic / hyperparameter / numerical behavior change** (Phase 2에서도 기존 학습/모델/physics
+   코드에 그대로 적용. Agent tool은 기존 기본값을 **그대로 노출**하고, 작은 smoke 설정은 호출 시 CLI 인자로
+   override할 뿐 스크립트의 기본값을 바꾸지 않는다. 신규 `agent/`와 `common/inference` 확장은 신규 인터페이스로
+   취급하여 TDD(RED부터)를 적용한다.)
    - learning rate, batch size, cutoff, optimizer, scheduler, seed, dataset split,
      전처리(preprocessing) 등 **값은 절대 변경하지 않는다.**
    - 허용되는 변경은 오직 코드의 **위치(location)와 책임(responsibility)의 재배치**뿐이다.
@@ -48,7 +54,7 @@ Franck-Condon(FC) 또는 Gaussian Mixture Model(GMM) 기반의 물리적 스펙�
 5. **커밋 단위 분리**
    - dead code 제거 / 파일 이동·rename / engine 통합 / config 이동을
      **한 커밋에 섞지 않는다.**
-   - 하나의 커밋은 하나의 논리적 변경만 담는다.
+   - 하나의 커밋은 하나의 논리적 변경만 담는다. (Phase 2: 의존성 설치/pytest 설정/문서 변경도 서로 섞지 않는다.)
    - TDD 사이클(아래 "개발 방법론" 참고)을 따르는 작업은 **RED 종료 시점 커밋**(Plan.md 갱신 +
      실패 테스트, 또는 순수 구조 이동의 경우 Plan.md 갱신만)과 **REVIEW 종료 시점 커밋**(구현 +
      리뷰 정리)으로 나눈다. 이 두 커밋도 서로 다른 성격의 변경과 섞지 않는다.
@@ -78,18 +84,26 @@ Franck-Condon(FC) 또는 Gaussian Mixture Model(GMM) 기반의 물리적 스펙�
 - 커밋은 RED 종료 시점과 REVIEW 종료 시점, 두 번만 일어나며 **항상 자동**이다 (제약 6).
 
 **순수 구조 이동과 신규 인터페이스 도입을 구분한다:**
-- **순수 구조 이동** (파일/함수 위치만 바꾸고 동작은 바꾸지 않는 작업 — 예: Plan.md의 Step 2, 4, 5,
-  7, 8 대부분): Step 1에서 만든 characterization test가 이미 오라클이므로, 새로 실패하는 테스트를
-  억지로 만들지 않는다. 이동 전후로 기존 테스트가 계속 GREEN을 유지하는지만 확인한다
+- **순수 구조 이동** (파일/함수 위치만 바꾸고 동작은 바꾸지 않는 작업): Phase 1에서 만든
+  characterization test(`tests/characterization/`)가 이미 오라클이므로, 새로 실패하는 테스트를
+  억지로 만들지 않는다. (Phase 2의 Step 1~7은 모두 신규 인터페이스이므로 RED부터 시작한다.) 이동 전후로 기존 테스트가 계속 GREEN을 유지하는지만 확인한다
   (Fowler식 refactoring — "테스트가 실패하는 것을 보는 것"이 아니라 "테스트가 깨지지 않는 것을
   보는 것"이 검증 수단이다).
-- **신규 공개 인터페이스 도입** (예: Step 3의 model adapter, Step 9의 `predict()` API): 문자 그대로의
+- **신규 공개 인터페이스 도입** (예: Phase 2의 registry, 예측/학습 tool, Agent): 문자 그대로의
   RED(그 인터페이스가 아직 없어서 실패하는 테스트)부터 시작하는 정상적인 TDD를 적용한다.
 
 ## 개발 환경
 
 - 가상환경: `venv_spectrum_cpu` (Python 3.12.10, Windows, **CPU 전용**)
 - GPU 환경 설정은 `README.md`의 Environments 섹션 참고 (이 문서의 대상이 아님).
+- **venv는 `venv_spectrum_cpu` 하나만 사용한다** (개발용). Phase 2의 agno/openai/gradio도 여기에 설치한다.
+  agno 설치는 pydantic 1.10 → 2.x 업그레이드를 동반하므로 설치 전 `pip freeze` 백업, 설치 후 전체 테스트
+  통과 확인이 필요하다 (Plan.md Step 0). 별도 venv를 만들지 않는다.
+- **Docker는 사용하지 않는다.** vLLM은 이 저장소에서 구동하지 않으며, OpenAI 호환 서버로 분리해
+  `VLLM_BASE_URL`, `VLLM_MODEL` 환경변수로 연결한다. 테스트는 LLM을 mock으로 대체해 vLLM 없이 통과해야
+  한다. 실제 vLLM 연동 테스트는 `vllm` 마커 + 환경변수가 있을 때만 실행한다.
+- 테스트 시간 가이드: 기존 46개 테스트 전체 약 56초 (Equiformer 모델 생성이 ~8초/건으로 가장 느림).
+  신규 테스트는 tiny 모델/mock을 사용하고, 실제 학습을 도는 테스트는 `slow` 마커로 분리한다.
 - CPU 환경은 **대규모 학습 목적이 아니라 "구조 변경 후 정상 동작 확인(smoke test)" 목적**으로만 사용한다.
 - 실행 예:
   ```
@@ -108,7 +122,7 @@ Franck-Condon(FC) 또는 Gaussian Mixture Model(GMM) 기반의 물리적 스펙�
   CPU 환경에서는 `--accelerator cpu --ndevices 1`을 명시적으로 넘겨야 동작한다.
   `train.py`는 현재 이 플래그를 하위 프로세스에 전달하지 않으므로 (`train.py:67-68`),
   CPU 환경에서 `train.py --base-model Geoformer`를 그대로 실행하면 실패한다.
-  → G2/Step 8 작업 시 CPU 환경 감지 및 플래그 전달 경로를 반드시 고려한다 (단, 이는 GPU 기본값
+  → (Phase 1 Step 8에서 `build_command()`로 해결됨. Phase 2 학습 tool도 CPU 플래그 전달을 유지해야 한다) (단, 이는 GPU 기본값
   자체를 바꾸는 것이 아니라 CPU에서 override 가능하게 하는 것이므로 제약 2 위반이 아니다).
 
 ### 테스트 실행
@@ -118,14 +132,16 @@ Franck-Condon(FC) 또는 Gaussian Mixture Model(GMM) 기반의 물리적 스펙�
 ```
 
 pytest 설정 파일은 아직 없다. 필요 시 `pytest.ini` 또는 `pyproject.toml`의 `[tool.pytest.ini_options]`를
-Step 1에서 추가한다 (별도 커밋).
+Phase 2 Step 0에서 `slow`/`vllm` 마커를 추가한다 (별도 커밋).
 
 ## 리팩토링 작업 방식
 
+0. Phase 2 신규 코드(`agent/` 등)는 `spectrum/` 밖에 두고, `spectrum.physics`는 import로만 사용한다
+   (제약 1). Agent는 반드시 AGNO로, LLM 연결은 AGNO `VLLM` 클래스로 구현한다.
 1. 새 코드를 작성하기 전에 `PRD.md`의 관련 요구사항(G1~G6)과 `Plan.md`의 해당 Step을 먼저 확인한다
    (TDD RED 단계).
 2. 구조를 옮기기 전, 대상 코드에 대한 characterization/regression test가 없으면 **먼저 추가한다**
-   (Plan.md Step 1의 범위. 없다면 이번 사이클의 RED에서 추가한다).
+   (Phase 1에서 확보됨. 없다면 이번 사이클의 RED에서 추가한다).
 3. 파일/함수를 이동할 때 값 자체를 건드리지 않았는지 `git diff`로 재확인한다
    (로직 이동은 이상적으로는 `git diff`에서 순수 이동으로 보여야 하며, 수치 변경이 섞여 있으면 안 된다).
 4. 변경 후 반드시 `venv_spectrum_cpu`에서 관련 회귀 테스트를 실행하고 **통과를 확인한 뒤 REVIEW 종료
@@ -139,6 +155,6 @@ Step 1에서 추가한다 (별도 커밋).
 ## 참고 문서
 
 - [PRD.md](PRD.md) — 리팩토링 목표(G1~G6)와 비목표
-- [Plan.md](Plan.md) — Step 0~9 실행 계획 및 각 Step의 완료 조건
+- [Plan.md](Plan.md) — Step 0~7 실행 계획 및 각 Step의 완료 조건
 - [.claude/TDD/SKILL.md](.claude/TDD/SKILL.md) — RED → GREEN → REVIEW 개발 사이클 (모든 프로덕션
   코드 변경에 적용)
