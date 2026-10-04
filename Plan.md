@@ -232,6 +232,24 @@ Step 0은 환경 세팅, Step 1~7은 `.claude/TDD/SKILL.md`의 RED → GREEN →
 - 완료 조건(REVIEW 종료 시): 위 3개 + 기존 74개 통과, Step 0 smoke의 실제 Equiformer ckpt(`train_Equiformer`가 만든 것, 기본 모델 크기)로
   test split 103개를 예측해 학습 스크립트의 `pred.csv`/`p_spec.csv`와 비교, `Equiformer/`·`train_Equiformer.py` 변경 없음.
 
+- **완료 결과 (Step 2C 종료)**
+  - RED(`25056f7`): 3개가 `ValueError: Unsupported base_model: 'Equiformer'`로 실패. GREEN(`ff6290a`): `_CHECKPOINT_BUILDERS`에
+    Equiformer 등록 + `_restore_norm_factor`가 ckpt `args`의 `task_mean/task_std`를 우선 사용. 신규 3개 + PaiNN 2B 7개 통과, 전체 77개 통과.
+  - REVIEW 확인 사항
+    - 스코프: Plan 범위 안(Equiformer 등록 + norm_factor 우선순위). `Equiformer/`, `train_Equiformer.py`, `predict()`, `spectrum/` 변경 없음
+      (GREEN 커밋의 변경 파일은 `common/inference.py` 하나).
+    - 실제 산출물 검증: Step 0에서 `train_Equiformer`로 학습한 실제 ckpt(기본 모델 크기, 약 3.3M 파라미터)를 로드해 test split 103개 예측.
+      - ckpt `args`의 `task_mean/std`가 학습 split 재계산 값과 정확히 일치(데이터셋을 읽지 않고도 같은 값). dtype float32, CPU.
+      - 파라미터 vs `pred.csv`: 최대 절대차 6.6e-7(값 범위 약 1.6). 분자 순서 동일.
+      - 곡선 vs `p_spec.csv`: 최대 절대차 1.4e-5. 같은 파라미터(`pred.csv`)로 `reconstruct_spectrum`하면 `p_spec.csv`와 5.4e-7(CSV 반올림 수준)
+        까지 일치하고, 파라미터에 ±6.6e-7 섭동만 줘도 곡선이 최대 8.3e-5 변하므로(선폭 C 최솟값 0.036) 관측된 차이는 float32 파라미터 오차가
+        곡선에서 증폭된 정상 범위다. 곡선 (103, 800), 유한.
+    - 성능(CPU): `load_checkpoint` 6.6초(모델 생성이 대부분), 103개 forward 21.8초(분자당 약 0.2초).
+    - 리팩토링: 제안 없음(코드 변경 없음).
+  - Step 3~4로 넘기는 사항: 예측 tool은 `LoadedCheckpoint`를 **캐시**해 요청마다 모델을 다시 만들지 않아야 한다(Equiformer는 로드 약 7초).
+    단일 분자 예측은 forward 약 0.2초 수준이다. 정규화 값 출처: PaiNN은 학습 split 재계산(0.2초, 전역 난수 시드 재설정 부작용 — 2B 기록 참고),
+    Equiformer는 ckpt `args`에 저장된 값.
+
 ### Step 2D. Geoformer (세부 계획은 2D RED에서 확정)
 - 범위(예정): Lightning ckpt의 `state_dict`에서 `model.` 접두사 제거, `hyper_parameters`로 모델 재구성,
   norm_factor는 `[0, 1]`(모델 내부 역정규화).
