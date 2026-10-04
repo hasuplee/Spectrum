@@ -37,6 +37,8 @@ _DOMAIN_KEYWORDS = (
     "painn", "geoformer", "equiformer", "모델", "체크포인트", "checkpoint",
     "분자", "molecule", "irdb", "step", "스텝", "배치", "batch",
     "기본값", "파라미터", "parameter", "상태", "로그", "워커", "worker",
+    # 대화 중 도메인 단어 없이 쓰이는 후속 표현 (Step 5C-1: 5A 리뷰에서 발견한 거짓 거절 보강)
+    "진행 상황", "설정", "default", "결과", "그래프", "실패", "얼마나", "끝났", "뭘 할 수", "사용법", "기본으로",
 )
 _MOLECULE_ID = re.compile(r"[a-z]+\d*_[a-z]+\d*_nn\d+")  # 예: cn1_cn1_nn1
 
