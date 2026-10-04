@@ -384,7 +384,7 @@ Step 0은 환경 세팅, Step 1~7은 `.claude/TDD/SKILL.md`의 RED → GREEN →
   11. `test_분자_ID_목록을_limit만큼_반환한다`
   12. `test_query로_분자_ID를_대소문자_무시하고_부분일치_검색한다`
   13. `test_limit이_범위를_벗어나면_error를_반환한다`
-- RED 검증 기준: 13개 모두 `ModuleNotFoundError: agent.tools.predict_tool`로 실패.
+- RED 검증 기준: 13개 모두 `agent.tools.predict_tool` 부재로 실패(12개는 `ModuleNotFoundError`, 캐시 테스트 1개는 `from agent.tools import predict_tool`의 `ImportError`).
 - 완료 조건(REVIEW 종료 시): 신규 13개 + 기존 테스트 통과, Step 0/2에서 만든 **실제 체크포인트 3종**(PaiNN/Equiformer/Geoformer)으로 `predict_spectrum`을 호출해
   학습 스크립트가 만든 같은 분자의 곡선(`p_spec.csv`)과 비교, `agent/`가 곡선 복원 로직을 직접 갖지 않고 `common.inference`를 통해 사용
   (파장 격자만 `spectrum.reconstruct.wavelength_grid_nm` import 허용), 기존 학습 코드 변경 없음.
