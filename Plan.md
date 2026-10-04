@@ -909,17 +909,60 @@ Step 0은 환경 세팅, Step 1~7은 `.claude/TDD/SKILL.md`의 RED → GREEN →
     - 학습 탭은 `get_training_defaults`/`validate_training_request`/`start_training`/`get_training_status`, 예측 탭은 `list_molecules`/`predict_spectrum`(전체 곡선)을 직접 사용. Geoformer 로그의 진행 막대 프레임은 걸러서 표시.
     - 기본 설정(10000 step)은 CPU에서 매우 오래 걸리므로 UI 학습 탭의 기본 입력은 작게 시작하도록 안내(제약 2: 스크립트 기본값은 변경하지 않고 tool의 override로 지정).
 
-## Step 6. UI (신규 인터페이스)
-- 목표: 간단한 UI에서 학습/예측 수행 (G4).
-- 범위: `agent/ui.py` (Gradio) — 채팅 탭(Agent) + 학습 탭 + 예측 탭(곡선 plot). 탭은 tool 함수를 직접 호출
-  하므로 LLM 없이도 동작. 로직은 UI 파일과 분리해 테스트 가능한 함수로 둔다.
-  채팅 탭: `VLLM_BASE_URL` 미설정/연결 불가 시 안내 메시지. 입력창 아래 예시 질문(클릭 시 입력) —
-  동작: "PaiNN으로 학습해줘", "그냥 학습해줘", "학습 기본값 보여줘", "학습 상태 알려줘",
-  "이 분자의 spectrum 예측해줘"(예시에는 실제 IrDB 분자 ID 포함), "사용 가능한 모델 알려줘";
-  거절 시연: "오늘 날씨가 뭐야?", "반도체는 뭐지?", "OLED의 정의는?", "파이썬 코드 짜줘".
-- 테스트: UI 핸들러 함수 단위 테스트(실제 브라우저 불필요), `build_ui()`가 예외 없이 구성되는지,
-  예시 질문 목록이 가드 기준과 일치하는지(동작 예시는 in-scope, 거절 예시는 out-of-scope).
-  브라우저 수동 확인은 REVIEW에서 1회.
+## Step 6. UI (신규 인터페이스) — 6A~6B로 분할
+- 목표: Gradio UI에서 **채팅(Agent)**, **학습**, **예측**을 쓸 수 있게 한다 (G4). 학습/예측 탭은 LLM 없이 tool 함수를 직접 호출하므로 LLM이 없어도 동작하고, 채팅 탭만 LLM(실제 또는 데모)이 필요하다.
+- 분할: 6A UI 로직(핸들러, Gradio 비의존) → 6B Gradio 화면 구성 + 실행 진입점(`python -m agent.ui`). 각 하위 Step마다 RED/GREEN/REVIEW 세 번 커밋(제목 `Step 6A RED: ...`).
+- 조사 근거 (gradio 6.29.1, 로컬 시제품)
+  - `Blocks`/`Tabs`/`Chatbot`/`State`/`Examples`/`LinePlot`/`Timer`가 모두 동작한다. **Gradio 6의 `Chatbot`에는 `type` 인자가 없고** 메시지(`{"role", "content"}`) 형식이 기본이다.
+    `api_name`을 준 이벤트는 `gradio_client.Client`로 호출할 수 있다(`huggingface-hub` 버전 충돌(Step 0 기록)이 있어도 호출 성공) → **브라우저 없이** 화면 구성과 이벤트 연결을 테스트할 수 있다.
+  - 실험 스펙트럼: IrDB의 `spec_x`는 eV 오름차순 800점(1.551~3.100), `spec_y`는 0~1이다. `nm = 1240/eV`로 바꾸면 예측 곡선(400~799.5nm)과 같은 축에 겹쳐 그릴 수 있다(예측은 nm에서 균등, 실험은 eV에서 균등이라
+    x 값이 달라 두 계열을 별도 x로 가진 긴 형식 표로 그린다).
+  - 비정상 곡선(5C-2 리뷰): 학습이 거의 안 된 모델은 상대 강도가 1을 훌쩍 넘는 곡선을 낼 수 있다(음수 최댓값으로 정규화) → 예측 탭은 이를 경고로 표시한다.
+  - 학습 로그의 Lightning 진행 막대 프레임은 정보량이 낮으므로(4B 기록) 학습 탭에서 걸러서 보여 준다.
+  - Agent는 대화 세션마다 하나여야 한다(미리보기 상태·대화 기억이 Agent별, 5C 기록) → 채팅 탭은 브라우저 세션별 `gr.State`에 Agent를 지연 생성해 보관한다.
+
+### Step 6A. UI 로직 (`agent/ui_logic.py`, Gradio 비의존)
+- 목표: 화면과 무관하게 테스트할 수 있는 핸들러 함수들. 화면(6B)은 이 함수를 이벤트에 연결할 뿐이다.
+- 범위
+  - 포함
+    - **LLM 상태**: `resolve_llm(environ=None, demo=False) -> LlmStatus(mode, message, base_url, model_id)` — `demo=True`면 프로세스 안에서 `MockLLMServer`를 한 번만 띄워(`mode="demo"`, 진짜 LLM이 아님을 알리는 메시지),
+      아니면 `VLLM_BASE_URL`/`VLLM_MODEL`이 모두 있을 때 `mode="real"`, 하나라도 없으면 `mode="disconnected"`(누락된 변수 이름과 `python -m agent.ui --demo` 안내). 시작 시 서버 접속 가능 여부는 확인하지 않는다(응답 지연 방지; 호출 실패는 `chat()`이 안내).
+    - **채팅**: `new_agent(llm_status, project_root, results_root) -> Agent | None`(`disconnected`면 None), `chat_turn(message, history, agent, llm_status, session_id) -> (history, agent)` —
+      빈 입력은 무시, Agent가 없으면(지연 생성) 만들고, `disconnected`면 assistant 안내 메시지(LLM이 필요하다는 설명과 학습/예측 탭은 쓸 수 있다는 안내), 그 외에는 `chat()` 결과를 assistant 메시지로 추가.
+    - **학습**: `quick_settings(base_model)`(CPU에서 빠르게 확인할 수 있는 작은 설정: 모델별 step/배치/모델 크기), `parse_custom_settings(text) -> (dict, 오류)`(JSON 객체만, 값은 정수/문자열), `training_defaults_markdown(base_model)`(기본값과 바꿀 수 있는 파라미터 표),
+      `training_preview(base_model, use_quick, custom_json, project_root)`(빠른 설정 위에 사용자 JSON을 덮어 최종 설정과 덮어쓰기 경고를 마크다운으로, 실행하지 않음), `training_start(base_model, use_quick, custom_json, confirmed, overwrite, project_root)`
+      (**화면 수준 확인**: `confirmed`가 False면 시작하지 않고 확인 안내, 기존 결과가 있으면 `overwrite` 체크 없이는 시작하지 않음 — `start_training`의 `confirmed`/`overwrite` 의미 그대로), `training_status_view(project_root) -> (상태 마크다운, 로그 텍스트, 실행 중 여부)`
+      (진행 막대 프레임을 거른 최근 로그 20줄).
+    - **예측**: `molecule_choices(query, limit=50)`(분자 ID 목록), `prediction_view(molecule_id, base_model, show_experimental, results_root, project_root) -> (곡선 표 DataFrame, 요약 마크다운)` — 곡선 표는 열 `wavelength_nm`, `intensity`, `종류`(`예측`/`실험`),
+      요약은 분자·모델·체크포인트·피크 파장, **비정상 곡선(최댓값 > 1.001 또는 최솟값 < -0.05) 경고**, 학습된 모델이 없으면 학습 탭 안내, 알 수 없는 분자 ID는 오류 메시지. 실험 곡선은 `nm = 1240/eV`로 변환해 파장 오름차순.
+  - 미포함: Gradio 컴포넌트와 이벤트 연결(6B), 실행 진입점(6B), 브라우저 확인(6B REVIEW), 비동기/스트리밍 응답, 여러 사용자 인증.
+- 테스트 계획 (`tests/agent_tools/test_ui_logic.py`; 새 모듈 import는 각 테스트의 도우미 안에서. LLM은 `fake_llm`/`MockLLMServer`, 학습은 가짜 명령, 예측은 tiny PaiNN 체크포인트 + 실제 IrDB)
+  1. `test_demo_모드는_데모_서버를_한_번만_띄우고_진짜_LLM이_아님을_알린다`
+  2. `test_실제_모드는_필수_환경변수가_모두_있어야_하고_없으면_누락된_이름과_데모_실행법을_안내한다`
+  3. `test_연결되지_않은_상태의_채팅은_LLM이_필요하다는_안내를_돌려주고_Agent를_만들지_않는다`
+  4. `test_채팅은_첫_메시지에서_Agent를_만들고_세션_동안_재사용하며_대화를_누적한다` (가짜 LLM으로 두 턴, 같은 Agent 객체, history에 user/assistant 메시지가 쌓임)
+  5. `test_빈_메시지는_무시한다` / `test_범위_밖_질문은_채팅에서도_거절_문구로_답한다`
+  6. `test_빠른_설정은_세_모델_모두_검증을_통과하고_기본값보다_작다`
+  7. `test_사용자_JSON은_객체만_허용하고_잘못된_입력은_오류_문구를_돌려준다` (JSON이 아님, 배열, 중첩 값, 빈 문자열은 빈 설정)
+  8. `test_학습_기본값_표시에는_기본값과_바꿀_수_있는_파라미터가_담긴다`
+  9. `test_학습_미리보기는_실행하지_않고_최종_설정과_덮어쓰기_경고를_보여_준다` (빠른 설정 + 사용자 JSON 병합, 사용자 JSON이 우선)
+  10. `test_확인_체크_없이는_학습을_시작하지_않는다` / `test_확인하면_학습이_시작되고_기존_결과가_있으면_덮어쓰기_체크가_필요하다`
+  11. `test_학습_상태_보기는_상태와_진행_막대를_걸러낸_로그를_돌려준다` (진행 막대 프레임이 섞인 가짜 학습 로그, 20줄 제한, 실행 중 여부, 작업 없음)
+  12. `test_분자_선택_목록은_검색어로_걸러진다`
+  13. `test_예측_보기는_예측_곡선_표와_요약을_돌려준다` (tiny 체크포인트, `종류=예측` 800행, 피크 파장이 `predict_spectrum`과 일치)
+  14. `test_실험_스펙트럼을_함께_보면_파장으로_변환한_실험_곡선이_추가된다` (`종류=실험`, 파장 400~800 범위, 강도 0~1)
+  15. `test_비정상_곡선은_경고를_표시한다` / `test_학습된_모델이_없으면_학습_탭을_안내한다` / `test_알_수_없는_분자는_오류_메시지를_돌려준다`
+- RED 검증 기준: 모두 `agent.ui_logic` 부재(`ModuleNotFoundError`)로 실패. 기존 251개는 영향 없이 통과.
+- 완료 조건(REVIEW 종료 시): 신규 + 기존 테스트 통과, 실제 tiny 학습 → 상태 → 예측 표시를 로직 함수만으로 연결, 로그 필터를 실제 Geoformer 학습 로그로 확인, 리팩토링 필요성 검토.
+
+### Step 6B. Gradio 화면 + 실행 진입점 (`agent/ui.py`)
+- 범위(예정, 세부는 6B RED에서 확정)
+  - `build_ui(llm_status, project_root, results_root) -> gr.Blocks`: 상단에 LLM 상태 배너(데모 모드는 "진짜 LLM이 아님" 강조), 탭 3개 —
+    ① 채팅: `Chatbot` + 입력창 + `gr.Examples`(`agent.guard.ALLOWED_EXAMPLES`와 거절 시연용 `REFUSED_EXAMPLES`), 세션별 `gr.State`에 Agent, ② 학습: 모델 선택·기본값 표시·"작은 설정으로 빠르게 시험" 체크(CPU 기본)·사용자 JSON·미리보기 버튼·
+    확인/덮어쓰기 체크·시작 버튼·`gr.Timer`로 갱신하는 상태/로그, ③ 예측: 분자 검색·선택, 모델 선택(자동/세 모델), 실험 스펙트럼 함께 보기 체크, 예측 버튼, `LinePlot`(예측/실험 색 구분)과 요약.
+  - 이벤트에 `api_name`을 부여해 `gradio_client`로 테스트: `/chat`, `/training_defaults`, `/training_preview`, `/training_start`, `/training_status`, `/molecules`, `/predict`.
+  - `python -m agent.ui [--demo] [--port 7860]`: `--demo`이면 `resolve_llm(demo=True)`, 아니면 환경변수. 서버는 `127.0.0.1`에만 바인딩.
+  - 테스트(예정): `build_ui` 구성, 엔드포인트 목록, 실제 `launch`(`prevent_thread_lock`) + `gradio_client`로 `/predict`, `/training_preview`→`/training_start`(가짜 학습), `/chat`(데모 서버) 호출, `python -m agent.ui --demo` 서브프로세스 기동 스모크(HTTP 200), REVIEW에서 브라우저로 화면 확인.
 
 ## Step 7. E2E smoke 및 정리
 - 목표: 성공 기준 1~4 확인 (G1~G6).
