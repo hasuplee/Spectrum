@@ -182,6 +182,27 @@ Step 0은 환경 세팅, Step 1~7은 `.claude/TDD/SKILL.md`의 RED → GREEN →
 - 완료 조건(REVIEW 종료 시): 위 7개 + 기존 67개 통과, Step 0 smoke의 실제 PaiNN ckpt로 로드→곡선 반환 확인(독립 검증),
   `common/`이 `spectrum.reconstruct`를 import만 하고 로직을 복사하지 않음.
 
+- **완료 결과 (Step 2B 종료)**
+  - RED(`823b6db`): 7개가 `ImportError: load_checkpoint`로 실패. GREEN(`390fa9b`): `common/inference.py`에
+    `LoadedCheckpoint`/`load_checkpoint`/`predict_curves` 추가, 신규 7개 통과 + 전체 74개 통과.
+  - REVIEW 확인 사항
+    - 스코프: Plan 범위 안(PaiNN만, 분자 조회/다른 모델 없음). 기존 `predict()` 본문은 변경 없음.
+    - 라이센스 경계: `common/`은 `spectrum.reconstruct`를 import만 함(로직 복사 없음). `spectrum/` 변경 없음.
+    - 실제 산출물 검증: Step 0에서 학습한 실제 PaiNN ckpt를 `load_checkpoint`(mean/std 재계산 포함)로 로드해 test split 103개를
+      예측 → 학습 스크립트가 저장한 `pred.csv`와 파라미터 최대 절대차 1.9e-6(값 범위 약 38, float32 오차 수준),
+      `p_spec.csv`와 곡선 최대 절대차 3.7e-6(CSV 6자리 반올림 + 파라미터 오차 전파). 분자 순서 동일, 곡선 (103, 800) 유한.
+    - 성능: 재계산 포함 `load_checkpoint` 0.20초, `norm_factor` 직접 지정 시 0.01초.
+    - 리팩토링: 코드 변경 없음. 단, 이번 변경으로 틀려진 모듈 docstring("곡선 복원은 호출자에게 남김")만 현재 동작에 맞게 고쳤다
+      (주석 변경만, 동작 영향 없음).
+  - Step 3~4로 넘기는 사항 (주의)
+    - `load_checkpoint`의 mean/std 재계산(`load_dataset_splits`)은 ckpt `args`의 상대 경로(`data_path='IrDB'`,
+      `split_index_npz`)를 쓰므로 **작업 디렉터리가 저장소 루트여야 한다**(다른 곳에서는 `FileNotFoundError`). Step 3/4의 tool은 루트를
+      명시적으로 지정(chdir 또는 경로 인자)해야 한다.
+    - `load_dataset_splits`는 내부에서 전역 `torch.manual_seed`/`np.random.seed`를 `args.seed`로 재설정한다(기존 동작).
+      재계산 경로를 호출하면 호출자의 전역 난수 상태가 바뀐다 — 필요하면 tool 쪽에서 `norm_factor`를 캐시해 직접 넘긴다.
+    - 분자 ID → 배치 변환(IrDB 조회, `DataLoader`)은 Step 3에서 구현한다(이번 검증에서 쓴 방식:
+      `load_dataset_splits(args)`의 test_dataset + `torch_geometric.loader.DataLoader`).
+
 ### Step 2C. Equiformer (세부 계획은 2C RED에서 확정)
 - 범위(예정): ckpt `args.task_mean/std` 사용, `equiformer_adapter.build`로 재구성. Equiformer 테스트는 느리므로(약 8초/건) 최소 케이스.
 

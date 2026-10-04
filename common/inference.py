@@ -6,10 +6,11 @@ unlike engine.py's train_one_step()/evaluate(), which are still coupled to
 the training loop, or geoformer/module.py's LNNP, which is coupled to
 PyTorch Lightning.
 
-This is a skeleton, not a finished inference service (PRD non-goal):
-reconstructing an actual spectrum curve from the returned FC/GMM parameter
-vector (via spectrum.physics.spectrum_fc/spectrum_gmm) is left to the
-caller.
+predict() returns the (unnormalized) FC/GMM parameter vector. load_checkpoint()
+and predict_curves() (Plan.md Step 2B) restore a trained checkpoint and turn
+that vector into a spectrum curve via spectrum.reconstruct (imported, not
+copied). Only PaiNN checkpoints can be loaded so far (Steps 2C/2D add the
+other two backbones).
 """
 
 from dataclasses import dataclass
