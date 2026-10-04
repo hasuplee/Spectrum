@@ -711,6 +711,32 @@ Step 0은 환경 세팅, Step 1~7은 `.claude/TDD/SKILL.md`의 RED → GREEN →
 - 완료 조건(REVIEW 종료 시): 신규 + 기존 테스트 통과, 실제 tiny 학습 → 상태 조회 → 예측 요약까지 래퍼만으로 연결(저장소 루트에서 실제 PaiNN tiny 학습), 응답 크기 측정(예측 요약 약 1KB 이하),
   `agent/`가 곡선 계산 로직을 직접 갖지 않음, 리팩토링 필요성 검토.
 
+- **완료 결과 (Step 5B 종료)**
+  - RED(`1e7ba6f`): tool 래퍼 테스트 17개가 `agent.assistant_tools` 부재로 실패. GREEN(`02f7631`): `agent/assistant_tools.py` 신규(170줄) + `train_tool.changeable_parameters` 공개 함수(+6/-1줄),
+    신규 17개 통과 + 전체 195개 통과.
+  - REVIEW 확인 사항
+    - 스코프: Plan 범위 안. Agent 조립/instructions/가드 연결/작업 취소 tool 없음. `agent/`에 곡선 계산 로직이나 `spectrum` 참조 없음(예측은 `predict_spectrum` 결과를 요약만 함).
+    - 실제 동작 검증: 저장소 루트에서 **래퍼 7개만으로** PaiNN tiny 학습부터 예측 요약까지 연결(확인 후 산출물 삭제).
+      학습 전 `list_trained_models`는 `any_trained=False`, 예측은 `needs_training` → 미리보기 없이 실행은 `not_previewed` → `preview_training`(`will_overwrite=False`) → `start_training_confirmed`
+      (`started`) → 상태 폴링(실행 중 로그 관찰됨, 8.5초 만에 `finished`, 체크포인트 생성) → `predict_molecule_spectrum`이 `ok`(PaiNN, `checkpoint_best.ckpt`, 피크 파장, 샘플 8개)
+      → 재학습 시도: `preview`가 `will_overwrite=True`와 삭제 경고를 안내, `overwrite` 없이는 `already_trained`, `overwrite=True`로 다시 `started` → 재학습 후 예측 `ok`.
+    - 응답 크기(LLM 컨텍스트 부담): 모든 래퍼 응답이 1KB 미만 — 학습 전 목록 206B, 기본값 439B, 미리보기 514B, 시작 496B, 상태 424B, **예측 요약 521B(전체 곡선 결과는 22,597B로 약 43배 작음)**.
+      LLM에 실리는 tool 스키마 전체(7개)는 약 3.7KB(tool당 306~789B).
+    - 리팩토링 검토: **필요 없음, 변경하지 않았다.** `assistant_tools.py`는 tool별로 작은 클로저 7개와 단일 상태 항목(`state["preview"]`)으로 구성되어 책임이 분명하다. `start_training_confirmed`가 검증을
+      한 번 더 하는 중복은 비용이 없고 `start_training`의 독립적 검증과 의도가 다르다. 두 테스트 파일에 중복된 도우미(`_use_fake_training` 5줄)는 시그니처가 다른 `_wait_until_done`과 함께 묶을 만큼
+      크지 않다. 미사용 import 없음(AST 점검), `train_tool.changeable_parameters`로 허용 목록의 중복은 이미 제거됨.
+  - 관찰한 개선 후보 (동작/문구 변경이라 리팩토링이 아니므로 변경하지 않고 기록)
+    1. 문구: 학습된 모델이 하나도 없을 때 예측의 `needs_training` 메시지가 "학습된 어떤 모델의 체크포인트가 없습니다"로 어색하다(`predict_tool.py`의 `target` 기본 문구). "학습된 모델이 없습니다"가 자연스럽다
+       — 테스트는 메시지가 비어 있지 않은지만 확인하므로 안전하게 고칠 수 있다(Step 7 정리 때 함께 처리 가능).
+    2. LLM이 선택 인자를 빈 문자열로 보내는 경우: `check_training_status(job_id="")`는 `unknown_job`이 된다. 실제 LLM 연결 후 관찰해 필요하면 빈 문자열을 `None`으로 취급한다.
+    3. Geoformer 학습 로그의 마지막 줄은 Lightning 진행 막대 프레임이라 정보량이 낮다(4B 기록). UI(Step 6)에서 걸러서 보여줄 수 있다.
+  - Step 5C로 넘기는 사항
+    - 미리보기 상태는 `build_assistant_tools()` 인스턴스(= 대화 세션)별이고, 작업 목록(`train_tool._jobs`)은 프로세스 전역이다 → 5C의 `build_agent`는 **세션마다 도구 인스턴스를 만들어** 한 사용자의 미리보기가 다른 세션의
+      확인 실행에 쓰이지 않게 하고, 동시 학습 제한(`busy`)은 세션 간에 공유된다.
+    - instructions는 tool 호출 순서(`show_training_defaults` → `preview_training` → 사용자 확인 → `start_training_confirmed`; 덮어쓰기는 `overwrite=True` + 삭제 경고)와 `not_previewed`/`already_trained`/`busy`/
+      `needs_training` 응답을 사용자에게 어떻게 전달할지를 담는다. 사용자의 "응"이 있었는지는 tool이 검증하지 않으므로 instructions의 책임이다.
+    - 가드의 후속 질문 보강과 `ERROR` 로그 처리(5A 기록)도 5C에서 결정한다.
+
 ### Step 5C. Agent 조립 + 대화 시나리오 (`agent/agent.py`)
 - 목표: 가드·instructions·tool·대화 기억·`VLLM`을 합친 `build_agent()`와 `chat()` (G3).
 - 범위(예정, 세부는 5C RED에서 확정)
