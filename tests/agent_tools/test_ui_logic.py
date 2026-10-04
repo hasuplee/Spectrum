@@ -109,6 +109,21 @@ def test_채팅은_첫_메시지에서_Agent를_만들고_세션_동안_재사�
     assert "그냥 학습해줘" in str(fake_llm.requests[1]["messages"])  # Agent의 대화 기억이 다음 요청에 실린다
 
 
+def test_실제_모드의_API_키는_상태에_담겨_Agent에_전달되고_출력에는_드러나지_않는다(tmp_path):
+    # REVIEW에서 추가: resolve_llm(environ)에 주입한 환경의 토큰이 new_agent에서 무시되던 불일치(os.environ을 따로 읽음)를 막는다.
+    from agent.ui_logic import new_agent, resolve_llm
+
+    base = {"VLLM_BASE_URL": "http://internal:8000/v1", "VLLM_MODEL": "my-model"}
+    status = resolve_llm({**base, "VLLM_API_KEY": "secret-token"})
+
+    with_key = new_agent(status, project_root=tmp_path)
+    without_key = new_agent(resolve_llm(base), project_root=tmp_path)
+
+    assert with_key.model.api_key == "secret-token"
+    assert without_key.model.api_key == "EMPTY"  # 키가 없으면 인증 없는 서버용 더미
+    assert "secret-token" not in repr(status) and "secret-token" not in status.message  # 토큰이 로그/출력에 드러나지 않는다
+
+
 def test_빈_메시지는_무시한다(fake_llm, tmp_path):
     from agent.ui_logic import chat_turn
 
@@ -261,6 +276,22 @@ def test_학습_상태_보기는_상태와_진행_막대를_걸러낸_로그를_
     assert running is True and "진행 중" in running_status
     assert finished_running is False and "완료" in finished_status
     assert log_text.splitlines() == [f"n{i}" for i in range(10, 30)]  # 진행 막대 프레임은 걸러내고 최근 20줄만 (프레임 때문에 줄어들지 않는다)
+
+
+def test_학습_로그에서_빈_줄과_ANSI_제어_문자와_진행_막대를_걸러낸다(tmp_path, monkeypatch):
+    # REVIEW에서 추가: 실제 Geoformer(Lightning) 로그 117줄 중 의미 있는 줄은 36줄뿐이었다
+    # (진행 막대 프레임 65줄, 빈 줄 15줄, 커서 이동 같은 ANSI 코드가 있는 줄 6줄).
+    from agent.ui_logic import training_start, training_status_view
+
+    use_fake_training(monkeypatch, (
+        "print('시작'); print(); print('   \x1b[A'); print('\x1b[2K실제 로그 줄'); "
+        "print('\x1b[A Epoch 0:  50%|#####     | 2/4 [00:01<00:01,  1.20it/s]'); print('마지막 줄')"))
+    training_start("PaiNN", False, "", True, False, project_root=tmp_path)
+    _wait_for_training(tmp_path)
+
+    _, log_text, _ = training_status_view(project_root=tmp_path)
+
+    assert log_text.splitlines() == ["시작", "실제 로그 줄", "마지막 줄"]  # 빈 줄, ANSI만 있는 줄, 진행 막대는 제거하고 ANSI는 지운 본문만 남는다
 
 
 def test_실패한_학습은_실패로_표시한다(tmp_path, monkeypatch):

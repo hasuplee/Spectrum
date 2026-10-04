@@ -8,7 +8,7 @@ import contextlib
 import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -25,6 +25,7 @@ CURVE_COLUMNS = ["wavelength_nm", "intensity", "종류"]
 _EV_NM = 1240.0  # nm = 1240 / eV (spectrum.reconstruct와 같은 환산 관례)
 _LOG_LINES = 20
 _PROGRESS_FRAME = re.compile(r"\d+%\|.*\||it/s\]|s/it\]")  # Lightning/tqdm 진행 막대 프레임
+_ANSI_CODE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")  # 커서 이동 같은 ANSI 제어 문자
 
 _QUICK_SETTINGS = {
     # CPU에서 빠르게 동작을 확인하기 위한 작은 설정 (스크립트 기본값은 바꾸지 않고 tool의 override로만 지정)
@@ -44,6 +45,7 @@ class LlmStatus:
     message: str
     base_url: Optional[str] = None
     model_id: Optional[str] = None
+    api_key: Optional[str] = field(default=None, repr=False)  # 토큰이 repr/로그에 드러나지 않게 한다
 
 
 _demo_server = None
@@ -81,6 +83,7 @@ def resolve_llm(environ=None, demo=False) -> LlmStatus:
                      "환경변수 VLLM_BASE_URL, VLLM_MODEL(인증이 필요하면 VLLM_API_KEY)을 설정하거나 `python -m agent.ui --demo`로 데모 모드를 쓰세요. "
                      "학습/예측 탭은 LLM 없이 사용할 수 있습니다."))
     return LlmStatus(mode="real", base_url=environ["VLLM_BASE_URL"], model_id=environ["VLLM_MODEL"],
+                     api_key=environ.get("VLLM_API_KEY") or None,
                      message=f"LLM 서버: {environ['VLLM_BASE_URL']} (모델 {environ['VLLM_MODEL']})")
 
 
@@ -91,8 +94,7 @@ def new_agent(llm_status, project_root=PROJECT_ROOT, results_root=None):
     """대화 세션 하나를 위한 Agent. LLM이 연결되지 않았으면 None."""
     if llm_status.mode == "disconnected":
         return None
-    model = build_model({"VLLM_BASE_URL": llm_status.base_url, "VLLM_MODEL": llm_status.model_id,
-                         "VLLM_API_KEY": os.environ.get("VLLM_API_KEY")})
+    model = build_model({"VLLM_BASE_URL": llm_status.base_url, "VLLM_MODEL": llm_status.model_id, "VLLM_API_KEY": llm_status.api_key})
     return build_agent(model=model, project_root=project_root, results_root=results_root)
 
 
@@ -207,7 +209,8 @@ def training_status_view(project_root=PROJECT_ROOT):
         text += f", 종료 코드 {status['return_code']}"
     if status["state"] == "finished":
         text += ", 체크포인트 생성됨" if status["has_checkpoint"] else ", 체크포인트 없음"
-    lines = [line for line in status["log_tail"] if not _PROGRESS_FRAME.search(line)]
+    cleaned = (_ANSI_CODE.sub("", line).rstrip() for line in status["log_tail"])
+    lines = [line for line in cleaned if line.strip() and not _PROGRESS_FRAME.search(line)]  # 빈 줄과 진행 막대 프레임은 제외
     return text, "\n".join(lines[-_LOG_LINES:]), status["state"] == "running"
 
 
