@@ -976,13 +976,34 @@ Step 0은 환경 세팅, Step 1~7은 `.claude/TDD/SKILL.md`의 RED → GREEN →
     상태 보기는 `(마크다운, 로그 텍스트, 실행 중 여부)`. 화면 수준 확인/덮어쓰기 체크박스 값은 `training_start`의 `confirmed`/`overwrite`로 그대로 전달.
 
 ### Step 6B. Gradio 화면 + 실행 진입점 (`agent/ui.py`)
-- 범위(예정, 세부는 6B RED에서 확정)
-  - `build_ui(llm_status, project_root, results_root) -> gr.Blocks`: 상단에 LLM 상태 배너(데모 모드는 "진짜 LLM이 아님" 강조), 탭 3개 —
-    ① 채팅: `Chatbot` + 입력창 + `gr.Examples`(`agent.guard.ALLOWED_EXAMPLES`와 거절 시연용 `REFUSED_EXAMPLES`), 세션별 `gr.State`에 Agent, ② 학습: 모델 선택·기본값 표시·"작은 설정으로 빠르게 시험" 체크(CPU 기본)·사용자 JSON·미리보기 버튼·
-    확인/덮어쓰기 체크·시작 버튼·`gr.Timer`로 갱신하는 상태/로그, ③ 예측: 분자 검색·선택, 모델 선택(자동/세 모델), 실험 스펙트럼 함께 보기 체크, 예측 버튼, `LinePlot`(예측/실험 색 구분)과 요약.
-  - 이벤트에 `api_name`을 부여해 `gradio_client`로 테스트: `/chat`, `/training_defaults`, `/training_preview`, `/training_start`, `/training_status`, `/molecules`, `/predict`.
-  - `python -m agent.ui [--demo] [--port 7860]`: `--demo`이면 `resolve_llm(demo=True)`, 아니면 환경변수. 서버는 `127.0.0.1`에만 바인딩.
-  - 테스트(예정): `build_ui` 구성, 엔드포인트 목록, 실제 `launch`(`prevent_thread_lock`) + `gradio_client`로 `/predict`, `/training_preview`→`/training_start`(가짜 학습), `/chat`(데모 서버) 호출, `python -m agent.ui --demo` 서브프로세스 기동 스모크(HTTP 200), REVIEW에서 브라우저로 화면 확인.
+- 목표: 6A의 핸들러를 Gradio 화면에 연결하고 `python -m agent.ui [--demo]`로 실행할 수 있게 한다 (G4).
+- 조사 근거 (gradio 6.29.1, 계획한 구조를 흉내 낸 임시 시제품으로 `gradio_client` 반환값을 확인, 시제품은 저장소 밖)
+  - **채팅**: `/chat`은 `(history, 입력창 값)`을 돌려준다. history 메시지의 content는 문자열이 아니라 `{"type": "text", "text": ...}` 조각 목록이다. 반환된 history를 다음 호출에 그대로 넘겨도 되고(두 번째 턴에 메시지 4개),
+    `gr.State`에 둔 Agent는 같은 클라이언트 세션 동안 유지되어 이전 턴의 맥락이 이어진다.
+  - **예측**: `LinePlot`은 `{"columns", "data", "datatypes", "mark": "line"}` 딕셔너리로 돌려주고, **빈 표(모델 없음)도 `data: []`로 오류 없이** 돌려준다. 분자 `Dropdown` 갱신(`gr.update(choices=...)`)은 `{"choices": [[라벨, 값], ...]}`로 돌아온다.
+  - **구성 확인**: 탭 컴포넌트의 종류는 `tabitem`(라벨 `채팅/학습/예측`), `gr.Examples`는 `dataset` 컴포넌트(`samples`가 `[[문장], ...]`), 배너는 `elem_id`로 찾을 수 있다. `gr.Timer`의 `tick` 이벤트도 `api_name`을 주면 엔드포인트가 된다.
+- 범위
+  - 포함
+    - `build_ui(llm_status, project_root=저장소루트, results_root=None) -> gr.Blocks`
+      - 상단: 제목과 **LLM 상태 배너**(`elem_id="llm-banner"`, `llm_status.message`를 그대로 표시 — 데모 모드는 "진짜 LLM이 아님"을 강조).
+      - 탭 3개(`채팅`, `학습`, `예측` 순서):
+        ① **채팅**: `Chatbot` + 메시지 입력 + 세션별 `gr.State`(Agent) + `gr.Examples` 두 묶음("이렇게 물어보세요"=`ALLOWED_EXAMPLES`, "거절 시연"=`REFUSED_EXAMPLES`).
+        이벤트 `api_name="chat"`: 입력 `(메시지, history)` → 출력 `(history, 입력창 비움)`.
+        ② **학습**: 모델 `Dropdown`(PaiNN/Geoformer/Equiformer, 변경 시 기본값 표시 `/training_defaults`), "작은 설정으로 빠르게 시험"(기본 체크), 사용자 JSON 입력, 미리보기 버튼(`/training_preview`: 모델, 빠른 설정, JSON),
+        확인 체크 + 덮어쓰기 체크 + 학습 시작 버튼(`/training_start`: 모델, 빠른 설정, JSON, 확인, 덮어쓰기), 상태 영역(마크다운 + 로그 텍스트)을 `gr.Timer`(3초)로 갱신(`/training_status`, 입력 없음, 출력 `(상태, 로그)`).
+        ③ **예측**: 분자 검색(`/molecules`: 검색어 → `Dropdown` choices 갱신, 최대 50개), 분자 선택, 모델 선택(자동/세 모델), "실험 스펙트럼 함께 보기"(기본 체크), 예측 버튼(`/predict`: 분자, 모델, 실험 포함 → `LinePlot(x="wavelength_nm", y="intensity", color="종류")`와 요약).
+      - 모든 핸들러는 `project_root`/`results_root`를 바인딩한 6A 함수의 얇은 래퍼이며, 화면은 로직을 갖지 않는다.
+    - `python -m agent.ui [--demo] [--port 7860]`: `--demo`이면 `resolve_llm(demo=True)`, 아니면 환경변수. 시작할 때 모드를 출력(데모 모드는 "진짜 LLM이 아님"을 분명히), `127.0.0.1`에만 바인딩, 종료 시 `shutdown_demo_server()`.
+  - 미포함: 인증/다중 사용자 관리, 외부 공개(`share`), 스트리밍 응답, 모바일 레이아웃 최적화, 스타일링(기본 테마 사용).
+- 테스트 계획 (`tests/agent_tools/test_ui.py`; 화면 구성은 launch 없이 config로, 이벤트는 실제 서버 + `gradio_client`로 — 브라우저 불필요. 학습은 가짜 명령, 예측은 tiny 체크포인트 + 실제 IrDB, LLM은 데모 서버)
+  1. `test_화면은_이름_붙은_엔드포인트를_모두_갖는다` (`/chat`, `/training_defaults`, `/training_preview`, `/training_start`, `/training_status`, `/molecules`, `/predict`)
+  2. `test_탭은_채팅_학습_예측_순서이고_LLM_상태_배너와_예시_질문이_있다` (탭 라벨, 배너에 상태 메시지(데모/연결 안 됨/실제), 예시 두 묶음이 `guard`의 목록과 일치)
+  3. `test_채팅은_데모_모드에서_다중_턴_대화를_이어간다` / `test_연결되지_않은_상태의_채팅은_안내를_보여_준다` / `test_범위_밖_질문은_화면에서도_거절된다`
+  4. `test_학습_기본값은_모델_선택으로_조회된다` / `test_학습_미리보기와_시작과_상태가_화면_이벤트로_동작한다` (확인 체크 없이 거부, 확인 후 시작, 완료와 로그)
+  5. `test_분자_검색은_선택_목록을_갱신한다` / `test_예측_이벤트는_곡선과_요약을_돌려준다`(예측 800 + 실험 800 = 1600점) / `test_학습된_모델이_없을_때_예측은_학습_탭을_안내하고_빈_곡선을_돌려준다`
+  6. `test_python_m_agent_ui_demo는_서버를_띄우고_화면을_응답한다` (실제 서브프로세스, 빈 포트, HTTP 200, 출력에 "데모")
+- RED 검증 기준: 11개 모두 `agent.ui` 부재로 실패(10개 `ModuleNotFoundError`, 서브프로세스 1개는 서버가 뜨지 않음). 기존 275개는 영향 없이 통과.
+- 완료 조건(REVIEW 종료 시): 신규 + 기존 테스트 통과, `python -m agent.ui --demo`를 실제로 띄워 **브라우저로 화면을 확인**(채팅, 학습, 예측 탭의 실제 동작과 표시), 데모 모드/연결 안 됨 배너 확인, 리팩토링 필요성 검토.
 
 ## Step 7. E2E smoke 및 정리
 - 목표: 성공 기준 1~4 확인 (G1~G6).
