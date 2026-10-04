@@ -31,6 +31,19 @@ def _flag_value(command, flag):
     return command[command.index(flag) + 1]
 
 
+def _expected_default_workers(script_workers):
+    """Step 4B 정책(안 B): CPU에서는 workers 기본값이 0이고, GPU에서는 스크립트 기본값 그대로다."""
+    return script_workers if torch.cuda.is_available() else 0
+
+
+def _assert_default_workers_flag(command, flag):
+    """CPU에서는 기본 명령에 `<flag> 0`이 붙고(스크립트 기본값 4/6으로 되돌아가지 않게), GPU에서는 붙지 않는다."""
+    if torch.cuda.is_available():
+        assert flag not in command
+    else:
+        assert _flag_value(command, flag) == "0"
+
+
 def _default_request(base_model):
     from agent.tools.train_tool import validate_training_request
 
@@ -55,7 +68,7 @@ def test_PaiNN_기본값은_학습_스크립트의_기본값과_같다(monkeypat
         train_py.spectrum_type, train_py.data_path, train_py.batch_size)
     assert defaults["train_steps"] == script.train_steps
     assert defaults["eval_steps"] == script.eval_steps
-    assert defaults["workers"] == script.workers
+    assert defaults["workers"] == _expected_default_workers(script.workers)
     assert defaults["learning_rate"] == script.lr
     assert defaults["model_size"] == {
         "embed_dim": script.embed_dim, "num_layers": script.num_layers, "num_basis": script.num_basis}
@@ -77,7 +90,7 @@ def test_Equiformer_기본값은_학습_스크립트의_기본값과_같다(monk
         train_py.spectrum_type, train_py.data_path, train_py.batch_size)
     assert defaults["train_steps"] == script.train_steps
     assert defaults["eval_steps"] == script.eval_steps
-    assert defaults["workers"] == script.workers
+    assert defaults["workers"] == _expected_default_workers(script.workers)
     assert defaults["learning_rate"] == script.lr
     assert defaults["model_size"] == {"num_basis": script.num_basis}
 
@@ -96,7 +109,7 @@ def test_Geoformer_기본값은_yml_설정과_같다(monkeypatch):
         train_py.spectrum_type, train_py.data_path, train_py.batch_size)
     assert defaults["train_steps"] == config["num_steps"]
     assert defaults["eval_steps"] == config["eval_every"]
-    assert defaults["workers"] == config["num_workers"]
+    assert defaults["workers"] == _expected_default_workers(config["num_workers"])
     assert defaults["learning_rate"] == config["lr"]
     assert defaults["model_size"] == {
         key: config[key] for key in ("embedding_dim", "ffn_embedding_dim", "num_layers", "num_heads", "num_rbf")}
@@ -197,9 +210,10 @@ def test_PaiNN_기본_명령은_학습_스크립트_모듈과_train_py_인자로
     assert _flag_value(command, "--output-dir") == "results_PaiNN/0/0"
     assert _flag_value(command, "--split-index-npz") == "IrDB/raw/CV811/splits.0.0.npz"
     assert _flag_value(command, "--seed") == "0"
-    # 기본값과 같은 값은 덮어쓰기 플래그를 만들지 않는다 (스크립트 기본값에 맡긴다)
-    for flag in ("--train-steps", "--eval-steps", "--workers", "--embed-dim", "--num-layers", "--num-basis"):
+    # 스크립트 기본값과 같은 값은 덮어쓰기 플래그를 만들지 않는다 (스크립트 기본값에 맡긴다)
+    for flag in ("--train-steps", "--eval-steps", "--embed-dim", "--num-layers", "--num-basis"):
         assert flag not in command
+    _assert_default_workers_flag(command, "--workers")
 
 
 def test_Equiformer_기본_명령은_학습_스크립트_모듈과_train_py_인자로_조립된다():
@@ -211,8 +225,9 @@ def test_Equiformer_기본_명령은_학습_스크립트_모듈과_train_py_인�
     assert command[1:3] == ["-m", "train_Equiformer"]
     assert _flag_value(command, "--output-dir") == "results_Equiformer/0/0"
     assert _flag_value(command, "--batch-size") == "16"
-    for flag in ("--train-steps", "--eval-steps", "--workers", "--num-basis"):
+    for flag in ("--train-steps", "--eval-steps", "--num-basis"):
         assert flag not in command
+    _assert_default_workers_flag(command, "--workers")
 
 
 def test_Geoformer_기본_명령은_yml과_CPU_플래그를_포함한다():
@@ -230,8 +245,9 @@ def test_Geoformer_기본_명령은_yml과_CPU_플래그를_포함한다():
     if not torch.cuda.is_available():
         assert _flag_value(command, "--accelerator") == "cpu"
         assert _flag_value(command, "--ndevices") == "1"
-    for flag in ("--num-steps", "--eval-every", "--num-workers", "--embedding-dim"):
+    for flag in ("--num-steps", "--eval-every", "--embedding-dim"):
         assert flag not in command
+    _assert_default_workers_flag(command, "--num-workers")
 
 
 @pytest.mark.parametrize("base_model", SUPPORTED)
@@ -246,7 +262,10 @@ def test_기본_명령의_핵심_인자는_train_py의_build_command와_같다(b
 
     command = build_training_command(_default_request(base_model))
 
-    assert command == [sys.executable] + legacy[1:]  # 첫 토큰 'python'만 가상환경 인터프리터로 교체
+    # 첫 토큰 'python'만 가상환경 인터프리터로 교체하고, CPU에서는 workers 플래그만 추가된다 (Step 4B)
+    workers_flag = "--num-workers" if base_model == "Geoformer" else "--workers"
+    extra = [] if torch.cuda.is_available() else [workers_flag, "0"]
+    assert command == [sys.executable] + legacy[1:] + extra
 
 
 def test_override는_모델별_CLI_플래그로_변환된다():
@@ -271,6 +290,24 @@ def test_override는_모델별_CLI_플래그로_변환된다():
                         ("--ffn-embedding-dim", "16"), ("--num-layers", "1"), ("--num-heads", "2"), ("--num-rbf", "8"),
                         ("--conf", "geoformer/examples/GMM.yml")):
         assert _flag_value(geoformer, flag) == value
+
+
+@pytest.mark.parametrize("base_model, workers_flag", [
+    ("PaiNN", "--workers"), ("Equiformer", "--workers"), ("Geoformer", "--num-workers")])
+def test_GPU_환경에서는_workers_기본값이_스크립트_기본값이고_workers_플래그가_없다(monkeypatch, base_model, workers_flag):
+    from agent.tools.train_tool import build_training_command, get_training_defaults, validate_training_request
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)  # train.build_command의 CPU 플래그 판단에도 쓰인다
+
+    defaults = get_training_defaults(base_model)
+    command = build_training_command(validate_training_request(base_model)["request"])
+
+    script_workers = {"PaiNN": 4, "Equiformer": 4, "Geoformer": 6}[base_model]  # 4A 리뷰에서 확인한 스크립트/yml 기본값
+    assert defaults["device"] == "gpu"
+    assert defaults["workers"] == script_workers
+    assert workers_flag not in command
+    if base_model == "Geoformer":
+        assert "--accelerator" not in command  # GPU에서는 기존 명령 그대로
 
 
 # --- 출력 경로 / registry 일관성 ---------------------------------------------------------

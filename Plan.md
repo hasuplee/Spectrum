@@ -494,14 +494,57 @@ Step 0은 환경 세팅, Step 1~7은 `.claude/TDD/SKILL.md`의 RED → GREEN →
     - 안 B: CPU일 때만 tool 기본 `workers`를 0으로 한다(`train.build_command`가 CPU일 때 Geoformer에 `--accelerator cpu`를 붙이는 것과 같은 성격의 "CPU 환경 적응").
       GPU에서는 스크립트 기본값 그대로. 워커 수는 학습 데이터 순서/수치에 영향을 주지 않는 런타임 설정이지만(제약 2에 명시된 값 목록에 없음), 기본값을 바꾸는 것이므로 승인이 필요하다.
 
-### Step 4B. 백그라운드 실행 + 상태 조회 (세부 계획은 4B RED에서 확정)
-- 범위(예정)
-  - `start_training(base_model, overrides=None, *, confirmed=False, overwrite=False, ...)`: `confirmed=False`면 실행하지 않고 `{"status": "needs_confirmation", "settings": {...}}`로 최종 설정을
-    돌려준다(사용자 확인 절차를 도구 수준에서 강제). 확인되면 4A의 명령을 `subprocess.Popen`(cwd=저장소 루트, stdout/stderr→로그 파일)으로 실행하고 `{"status": "started", "job_id", "command", "log_path", "output_dir"}`.
-  - 한 번에 한 작업만(`{"status": "busy"}`), 이미 학습된 체크포인트가 있으면 `overwrite=True` 없이는 `{"status": "already_trained"}`.
-  - `get_training_status(job_id=None)`: running/finished/failed, return code, 경과 시간, 로그 tail, 학습 완료 후 체크포인트 존재 여부(registry).
-  - 테스트(예정): 실제 서브프로세스(`sys.executable -c ...`로 명령 대체)로 실행/완료/실패/busy/확인 절차, `slow`: tiny PaiNN 실학습 1건으로 체크포인트 생성 후 예측 tool(Step 3)까지 연결.
-- 결정 필요 사항(4B RED 전에 확정): Windows CPU에서 `workers`(PaiNN 기본 4, Geoformer yml 6) 기본값이 문제없이 동작하는지는 4A REVIEW에서 실제 학습으로 확인한다.
+### Step 4B. CPU 기본 워커 수 + 백그라운드 실행 + 상태 조회 (`agent/tools/train_tool.py` 확장)
+- 목표: 사용자 확인을 거친 학습을 백그라운드로 실행하고 진행 상태를 조회한다 (G1). 그 전에 4A 리뷰에서 결정된 CPU 기본 워커 수 정책을 반영한다.
+- 결정(사용자 승인, 안 B): 실제 구동은 GPU일 수 있으나 이번 계획의 개발·테스트는 처음부터 끝까지 CPU에서 진행한다. 4A 리뷰에서 기본 워커 수(PaiNN 4, Geoformer 6)로는 Windows CPU의
+  tiny 학습이 `workers=0`보다 크게 느렸으므로(Geoformer 217.8초 vs 12초), **CPU일 때만** tool의 기본 `workers`를 0으로 한다. GPU에서는 스크립트 기본값을 그대로 쓴다.
+  워커 수는 학습 수치(데이터 순서·값)에 영향이 없는 런타임 설정이며, `train.build_command`가 CPU일 때 `--accelerator cpu`를 붙이는 것과 같은 "CPU 환경 적응"이다(제약 2에 명시된 값 목록에 없음).
+- 4A 코드 영향
+  - `get_training_defaults`: `device == "cpu"`이면 `workers = 0`, `"gpu"`이면 스크립트 기본값(PaiNN/Equiformer `--workers`, Geoformer yml `num_workers`).
+  - `build_training_command`: 덮어쓰기 플래그 여부를 **tool 기본값이 아니라 스크립트 기본값과 비교**해 결정한다(CPU에서는 `--workers 0`/`--num-workers 0`이 붙고, GPU에서는 붙지 않는다).
+    그렇지 않으면 tool 기본값 0이 스크립트 기본값 4/6으로 조용히 되돌아간다.
+  - 4A 테스트 중 `workers` 기본값과 "기본 명령에는 덮어쓰기 플래그가 없다"를 검증하던 부분을 새 명세에 맞게 수정하고, GPU 경로(`torch.cuda.is_available`을 True로 대체)를 검증하는 테스트를 추가한다.
+- 범위
+  - 포함
+    - `start_training(base_model, overrides=None, *, confirmed=False, overwrite=False, project_root=저장소루트) -> dict`
+      1. `validate_training_request` 결과가 오류이면 그대로 반환(프로세스 없음).
+      2. 이미 실행 중인 작업이 있으면 `{"status": "busy", "job_id", "message"}` (한 번에 한 작업만).
+      3. `confirmed=False`이면 실행하지 않고 `{"status": "needs_confirmation", "settings": 최종 설정, "output_dir", "will_overwrite": 기존 체크포인트 존재 여부, "message"}` —
+         "기본값을 보여 주고 확인 후 학습" 절차를 tool 수준에서 강제한다.
+      4. `confirmed=True`인데 해당 모델의 체크포인트가 이미 있고 `overwrite=False`이면 `{"status": "already_trained", "checkpoint", "message"}`.
+      5. 그 외에는 시작: `overwrite=True`이면 기존 출력 디렉터리(`results_{모델}/0/0`)를 **삭제**한 뒤 시작한다(Geoformer의 `last.ckpt` 자동 이어 학습과 이전 체크포인트 혼입을 막고
+         세 모델의 의미를 같게 하기 위함; `confirmed`와 `overwrite`를 둘 다 명시해야만 도달). `subprocess.Popen(명령, cwd=project_root, stdout/stderr → 로그 파일)`로 실행하고
+         `{"status": "started", "job_id", "base_model", "command", "log_path", "output_dir", "settings"}`를 반환. 로그 파일은 `{project_root}/results_agent_logs/{job_id}.log`
+         (`.gitignore`의 `results_*/`에 포함, registry 탐색 대상 아님). 자식 프로세스는 환경변수 `PYTHONUTF8=1`(Windows 기본 cp949로 기록되면 UTF-8로 읽을 수 없음 —
+         실측 확인; 임시 경로의 한글도 깨짐)과 `PYTHONUNBUFFERED=1`(stdout이 파일이면 출력이 버퍼링되어 실행 중 로그가 보이지 않음 — 실측 확인)로 실행한다.
+    - `get_training_status(job_id=None, *, tail_lines=20, project_root=저장소루트) -> dict`: `{"status": "ok", "job_id", "base_model", "state": "running"|"finished"|"failed", "return_code",
+      "elapsed_seconds", "log_tail": [마지막 N줄], "log_path", "output_dir", "has_checkpoint", "settings"}` (`has_checkpoint`는 registry로 확인). `job_id` 생략 시 가장 최근 작업.
+      작업이 없으면 `{"status": "no_job"}`, 모르는 `job_id`는 `{"status": "error", "error": "unknown_job"}`.
+  - 미포함: 작업 중지/취소 tool, 여러 작업 큐, 프로세스 재시작 후 작업 복구(작업 목록은 프로세스 메모리에만 있음), AGNO 등록(Step 5), UI(Step 6), 학습 진행률 파싱(로그 tail만 제공),
+    GPU 실제 실행 검증(개발·테스트는 CPU만).
+  - 제약: 학습 프로세스는 `cwd=project_root` 기준 상대 경로(`IrDB/...`, `results_*`)를 쓰므로 실제 학습의 `project_root`는 저장소 루트여야 한다(테스트는 가짜 명령으로 임시 디렉터리를 쓴다).
+- 테스트 계획
+  - 4A 수정/추가 (`tests/agent_tools/test_train_tool.py`)
+    - 수정: 세 모델의 기본값 테스트(CPU에서 `workers == 0`, GPU면 스크립트 기본값), 세 모델의 기본 명령 테스트(CPU에서 `--workers 0`/`--num-workers 0` 포함, GPU면 없음),
+      `train_py` 드리프트 방지 테스트(핵심 인자는 동일하고 CPU면 workers 플래그만 추가).
+    - 추가: `test_GPU_환경에서는_workers_기본값이_스크립트_기본값이고_workers_플래그가_없다` (`torch.cuda.is_available`을 True로 대체)
+  - 4B (`tests/agent_tools/test_train_job.py`; 학습 명령은 `build_training_command`를 `[sys.executable, "-c", ...]`로 대체해 **실제 서브프로세스**를 쓴다. 작업 목록 `_jobs`는 테스트마다 초기화)
+    1. `test_확인하지_않으면_실행하지_않고_needs_confirmation을_반환한다` (프로세스가 시작되지 않았음을 파일 흔적 부재로 확인, `settings`/`output_dir`/`will_overwrite`)
+    2. `test_잘못된_요청은_검증_오류를_그대로_반환하고_실행하지_않는다`
+    3. `test_확인하면_백그라운드로_시작하고_작업_디렉터리와_로그를_남긴다` (`started`, 로그 파일 생성, 프로세스의 cwd가 project_root, 로그에 출력 기록)
+    4. `test_작업이_끝나면_finished_상태와_로그_tail을_알려준다`
+    5. `test_작업이_실패하면_failed_상태와_return_code와_로그를_알려준다`
+    6. `test_실행_중에_다시_시작하면_busy를_반환한다`
+    7. `test_이미_학습된_체크포인트가_있으면_overwrite_없이는_already_trained를_반환한다` (`needs_confirmation`의 `will_overwrite`도 True)
+    8. `test_overwrite를_주면_기존_출력_디렉터리를_지우고_시작한다`
+    9. `test_학습이_체크포인트를_만들면_has_checkpoint가_True이다` (가짜 학습이 `training_output_dir`에 체크포인트 파일 생성 → registry 연동)
+    10. `test_log_tail은_tail_lines만큼만_반환한다`
+    10-1. `test_실행_중에도_로그_tail에서_진행_상황을_볼_수_있다` (flush 없는 한글 출력이 실행 중 `log_tail`에 보임 — 버퍼링 없음 + UTF-8)
+    11. `test_작업이_없으면_no_job을_모르는_job_id는_unknown_job_error를_반환한다`
+    12. `test_실제_PaiNN_tiny_학습이_체크포인트를_만들고_예측_tool로_이어진다` (`@pytest.mark.slow`; 실제 명령, CPU 기본 워커 0; 저장소 루트의 `results_PaiNN`이 이미 있으면 skip하고, 이 테스트가 만든 산출물만 정리)
+- RED 검증 기준: 4A 수정/추가 중 새 명세에 의존하는 테스트와 4B 테스트가 모두 실패(4B는 `start_training`/`get_training_status` 부재). 새 명세와 무관한 4A 테스트와 기존 테스트는 통과.
+- 완료 조건(REVIEW 종료 시): 신규/수정 테스트와 기존 테스트 통과(slow 포함), 도구로 CPU 기본 워커 수의 실제 학습(tiny)이 4A 리뷰의 기본값 실행보다 빠르게 끝남을 실측, 학습 후 `predict_spectrum`으로 예측까지 연결,
+  `train.py`·`train_*.py` 변경 없음, 실행으로 만든 산출물 정리.
 
 ## Step 5. AGNO Agent (신규 인터페이스)
 - 목표: tool을 사용하는 특수 목적 Agent (G3).
