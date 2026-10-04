@@ -75,6 +75,11 @@ def get_training_defaults(base_model) -> dict:
     }
 
 
+def changeable_parameters(base_model) -> list:
+    """사용자가 덮어쓸 수 있는 파라미터 이름 (공통 파라미터 + 그 모델의 모델 크기 파라미터)."""
+    return ["spectrum_type", "data_path", *_COMMON_INT_MINIMUMS, *_MODEL_SIZE_PARAMETERS[base_model]]
+
+
 def validate_training_request(base_model, overrides=None) -> dict:
     """기본값 위에 overrides를 적용한 최종 설정을 돌려준다. 허용 목록 밖이거나 값이 잘못되면 error."""
     defaults = get_training_defaults(base_model)
@@ -84,7 +89,7 @@ def validate_training_request(base_model, overrides=None) -> dict:
     request = {key: value for key, value in defaults.items() if key != "status"}
     request["model_size"] = dict(request["model_size"])
     size_parameters = _MODEL_SIZE_PARAMETERS[base_model]
-    allowed = ["spectrum_type", "data_path", *_COMMON_INT_MINIMUMS, *size_parameters]
+    allowed = changeable_parameters(base_model)
 
     for parameter, value in (overrides or {}).items():
         if parameter not in allowed:
