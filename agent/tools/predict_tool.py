@@ -19,7 +19,8 @@ from spectrum.reconstruct import wavelength_grid_nm
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MAX_LIST_LIMIT = 100
 
-# (체크포인트 경로, 수정 시각) -> LoadedCheckpoint. 모델 로드(특히 Equiformer 약 7초)를 반복하지 않기 위함.
+# base_model -> ((체크포인트 경로, 수정 시각), LoadedCheckpoint). 모델 로드(특히 Equiformer 약 7초)를 반복하지 않기 위함.
+# 모델 종류마다 최신 1개만 유지한다: 재학습으로 체크포인트가 바뀌면 이전 모델은 교체되어 메모리에서 해제된다.
 _loaded_checkpoint_cache = {}
 
 
@@ -90,9 +91,12 @@ def list_molecules(query="", limit=20, *, project_root=PROJECT_ROOT) -> dict:
 
 def _load_cached(checkpoint):
     key = (str(checkpoint.path), checkpoint.modified_time)
-    if key not in _loaded_checkpoint_cache:
-        _loaded_checkpoint_cache[key] = load_checkpoint(checkpoint.path, checkpoint.base_model)
-    return _loaded_checkpoint_cache[key]
+    cached = _loaded_checkpoint_cache.get(checkpoint.base_model)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    loaded = load_checkpoint(checkpoint.path, checkpoint.base_model)
+    _loaded_checkpoint_cache[checkpoint.base_model] = (key, loaded)
+    return loaded
 
 
 def _open_dataset(loaded):

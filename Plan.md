@@ -389,6 +389,33 @@ Step 0은 환경 세팅, Step 1~7은 `.claude/TDD/SKILL.md`의 RED → GREEN →
   학습 스크립트가 만든 같은 분자의 곡선(`p_spec.csv`)과 비교, `agent/`가 곡선 복원 로직을 직접 갖지 않고 `common.inference`를 통해 사용
   (파장 격자만 `spectrum.reconstruct.wavelength_grid_nm` import 허용), 기존 학습 코드 변경 없음.
 
+- **완료 결과 (Step 3B 종료)**
+  - RED(`Step 3B RED` 커밋): 13개가 `agent.tools.predict_tool` 부재로 실패. GREEN(`e342f89`): `agent/tools/predict_tool.py` 신규(113줄) — `predict_spectrum`,
+    `list_molecules`. 신규 13개 통과 + 전체 100개 통과(REVIEW에서 테스트 1개 추가 → 14개, 전체 101개).
+  - REVIEW 확인 사항
+    - 스코프: Plan 범위 안. 기존 파일 변경 없음(GREEN 커밋은 신규 파일 1개). `agent/`가 `spectrum`에서 가져오는 것은 `wavelength_grid_nm`뿐이고 곡선 복원은
+      `common.inference`를 통해서만 수행(라이센스 경계 유지).
+    - 실제 산출물 검증: 실제 체크포인트 3종을 `results_*` 구조로 놓고(저장소 밖 임시 디렉터리), **작업 디렉터리를 저장소 밖으로 둔 채** `predict_spectrum`을
+      분자 3개씩(test split의 처음/중간/마지막) 호출해 학습 스크립트의 `p_spec.csv` 곡선과 비교.
+      곡선 최대 절대차: PaiNN 5.0e-7~4.1e-6, Equiformer 5.0e-7~1.5e-6, Geoformer 5.0e-7(CSV 6자리 반올림 + float32 오차 수준). 호출 후 작업 디렉터리 복원 확인.
+    - 성능(CPU, 캐시 적용): 첫 호출(모델 로드 포함) PaiNN 0.4초 / Equiformer 7.7초 / Geoformer(tiny) 0.2초, 이후 호출 PaiNN 0.25초 / Equiformer 0.78초 / Geoformer 0.21초.
+      `list_molecules` 0.18초. 호출당 약 0.1~0.2초는 분자 이름 목록(1024개 순회) 생성 비용.
+    - 모델 미지정 시 가장 최근 체크포인트의 모델(Geoformer, 수정 시각 최신)을 선택. 저장소 기본 `results_root`(현재 학습 산출물 없음)에서는 `needs_training`.
+    - 응답 크기: 한 번의 `ok` 결과 JSON이 약 19~22KB(곡선 800점 ×2) → LLM 컨텍스트에는 너무 크므로 Step 5의 Agent용 요약 래퍼가 필수(계획대로).
+  - 리뷰에서 나온 개선 사항
+    1. **(REVIEW에서 처리함)** 로드 캐시(`_loaded_checkpoint_cache`)에 크기 제한이 없어, 재학습으로 체크포인트 수정 시각이 바뀔 때마다 이전 모델이 메모리에 남았다
+       (장시간 실행되는 UI 세션에서 누적). 사용자 승인 하에 REVIEW 안에서 TDD 미니 사이클로 처리: 테스트
+       `test_재학습으로_체크포인트가_바뀌면_새로_로드하고_이전_모델은_메모리에서_해제한다`를 먼저 추가해 실패(이전 모델이 해제되지 않음)를 확인한 뒤,
+       캐시를 `base_model -> (키, LoadedCheckpoint)`로 바꿔 모델 종류마다 최신 1개만 유지하도록 수정(`_load_cached` 약 6줄). 이후 신규 포함 14개 + 전체 101개 통과.
+  - 남은 개선 후보 (코드 변경 없이 기록만, 진행 여부는 사용자가 결정)
+    2. 데이터셋 클래스 선택(`IrDB`/`PtDB` 분기, 6줄)이 `common/data.py`의 `load_dataset_splits`와 중복된다. 제안: `common/data.py`로 순수 추출 후 양쪽에서 사용
+       (`tests/refactor/test_common_data.py`가 오라클). 구조 변경이므로 별도 커밋/사이클이 필요.
+    3. 손상된 체크포인트 등 `load_checkpoint`의 예외는 현재 tool 밖으로 그대로 전파된다(`status` dict가 아님). Step 5에서 Agent 래퍼가 처리하거나, tool에
+       `{"status": "error", "error": "checkpoint_load_failed"}`를 추가할 수 있다.
+  - Step 4~5로 넘기는 사항: 학습 tool이 만드는 체크포인트 경로가 `registry`의 탐색 규칙(`results_{모델}/{seed}/{fold}/...`)과 일치해야 한다. Agent용 래퍼는 곡선을 요약
+    (피크 파장, 필요 시 일부 샘플)해서 돌려준다.
+- **Step 3 전체 완료**: 3A(`build_batch`) → 3B(`predict_spectrum`/`list_molecules`). 전체 101개 테스트 통과.
+
 ## Step 4. 학습 tool (신규 인터페이스)
 - 목표: 파라미터 검증/기본값 조회/백그라운드 학습/상태 조회 (G1).
 - 범위

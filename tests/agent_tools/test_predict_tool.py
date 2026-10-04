@@ -8,9 +8,11 @@ tiny PaiNN/Geoformer 체크포인트를 tmp_path/results_*에 저장해 사용�
 새 모듈 import는 체크포인트 준비 이후 각 테스트 안에서 하여, 준비 코드가 정상임을 확인하면서 개별 실패로 본다.
 """
 
+import gc
 import json
 import math
 import os
+import weakref
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -190,6 +192,32 @@ def test_같은_체크포인트로_다시_예측하면_모델을_다시_로드�
 
     assert first["status"] == "ok" and second["status"] == "ok"
     assert len(calls) == 1
+
+
+def test_재학습으로_체크포인트가_바뀌면_새로_로드하고_이전_모델은_메모리에서_해제한다(tmp_path, monkeypatch):
+    # REVIEW에서 추가: 로드 캐시가 재학습할 때마다 이전 모델을 쌓아 두지 않아야 한다.
+    ckpt = _save_painn_ckpt(tmp_path)
+    from agent.tools import predict_tool
+
+    loaded_refs = []
+
+    def tracking_load_checkpoint(*args, **kwargs):
+        loaded = load_checkpoint(*args, **kwargs)
+        loaded_refs.append(weakref.ref(loaded))  # 약한 참조만 보관해 해제 여부를 관찰한다
+        return loaded
+
+    monkeypatch.setattr(predict_tool, "load_checkpoint", tracking_load_checkpoint)
+
+    predict_tool.predict_spectrum("cn1_cn1_nn1", results_root=tmp_path)
+    old_mtime = ckpt.stat().st_mtime
+    os.utime(ckpt, (old_mtime + 100, old_mtime + 100))  # 재학습으로 같은 경로의 파일이 갱신된 상황
+    result = predict_tool.predict_spectrum("cn1_cn1_nn1", results_root=tmp_path)
+    gc.collect()
+
+    assert result["status"] == "ok"
+    assert len(loaded_refs) == 2          # 수정 시각이 바뀌었으므로 다시 로드
+    assert loaded_refs[0]() is None       # 이전 모델은 캐시에 남지 않고 해제됨
+    assert loaded_refs[1]() is not None   # 새 모델은 캐시에 유지됨
 
 
 def test_작업_디렉터리가_달라도_예측하고_원래_디렉터리로_복원한다(tmp_path, monkeypatch):
