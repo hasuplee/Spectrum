@@ -636,6 +636,30 @@ Step 0은 환경 세팅, Step 1~7은 `.claude/TDD/SKILL.md`의 RED → GREEN →
 - RED 검증 기준: 테스트 함수 8개(parametrize 포함 34 케이스) 모두 `agent.guard` 부재(`ModuleNotFoundError`)로 실패. 기존 144개는 영향 없이 통과(새 `tests/conftest.py` 포함).
 - 완료 조건(REVIEW 종료 시): 신규 + 기존 테스트 통과, **실험으로 쓴 질문 전체**(PRD의 거절 예시와 동작 예시)가 기대대로 판정됨, `agno` 로그 출력 소음 확인(거절 시 ERROR 로그 줄이 남는지 — 필요하면 조용히 처리할지 결정).
 
+- **완료 결과 (Step 5A 종료)**
+  - RED(`c50c10e`): 가드 테스트 8개(34 케이스)가 `agent.guard` 부재로 실패 + 가짜 OpenAI 호환 서버 테스트 기반. GREEN(`2bbeb82`): `agent/guard.py` 신규(`is_in_scope`, `REFUSAL_MESSAGE`,
+    `ScopeGuardrail`, `ALLOWED_EXAMPLES`/`REFUSED_EXAMPLES`), 신규 34 케이스 통과 + 전체 178개 통과.
+  - REVIEW 확인 사항
+    - 스코프: Plan 범위 안(가드 + 테스트 기반만). tool 래퍼/Agent 조립 없음. 기존 파일 변경 없음(GREEN 커밋은 신규 파일 1개). 라이센스 경계: `spectrum/` 미참조.
+    - 폭넓은 문장 시험(구현 외부의 일회성 스크립트, 64문장): 기대와 다른 판정 3건.
+      - 거짓 거절 1건: "진행 상황 알려줘"(정상 상태 문의인데 키워드 목록에 `진행 상황`이 없음).
+      - 알려진 한계 2건(계획에 명시): "Geoformer 논문 요약해줘", "FC 모델 설명해줘"는 도메인 키워드 + 행동 표현("해줘") 때문에 가드를 통과 → 5C의 instructions가 두 번째 방어선.
+      - 사용자가 직접 말한 거절 예시("오늘 날씨가 뭐야?", "반도체는 뭐지", "OLED의 정의는")와 동작 예시("PaiNN으로 학습해줘", "이 분자의 spectrum 예측해줘")는 모두 기대대로. UI 예시 질문 목록과 가드 판정도 일치.
+    - **발견된 약점(변경하지 않고 기록): 가드는 현재 메시지만 보므로 대화 중 도메인 단어가 없는 후속 질문이 거절된다.** 관찰된 거절: "기본으로 해줘", "기본 설정으로 진행해줘",
+      "default로 해줘", "얼마나 걸려?", "끝났어?", "다시 해줘", "아까 그걸로 해줘", "그만해줘", "멈춰줘", "결과 보여줘", "그래프 보여줘", "왜 실패했어?", "뭘 할 수 있어?", "사용법 알려줘".
+      (거절되어도 `REFUSAL_MESSAGE`가 할 수 있는 일과 예시를 안내하므로 사용자가 다시 물을 수 있다.) 반면 "에러 로그 보여줘", "Geoformer 말고 PaiNN으로"는 통과.
+      - 개선안(동작 변경이라 사용자 승인 필요): (a) 키워드/표현 보강 — `진행 상황`, `설정`, `default`, `결과`, `그래프`, `실패`, `에러`, `얼마나`, `끝났`, `사용법`, `뭘 할 수 있` 등,
+        (b) 대화 이력이 있을 때만 짧은 문장을 완화하는 이력 인지 가드(범위 밖 짧은 질문이 통과하므로 instructions 의존도가 커짐).
+      - 결정: **5A에서는 변경하지 않는다.** 가드와 instructions, 대화 기억이 함께 있어야 적절한 균형을 판단할 수 있으므로 5C(데모 서버로 직접 채팅해 보며)에서 한 번에 조정한다.
+    - AGNO 로그: 가드가 거절할 때마다 `agno` 로거가 `ERROR   Validation failed: <거절 문구> | Check trigger: INPUT_NOT_ALLOWED` 한 줄을 남긴다(범위 안 질문에서는 없음). 반환값(`RunOutput.content`)은
+      정상이며 stdout/stderr 버퍼가 아니라 로깅 핸들러로 출력된다. 동작 문제는 아니고 서버 콘솔의 소음이다. 5C에서 `build_agent`가 이 메시지를 걸러낼지(로깅 필터) 결정한다.
+    - 리팩토링 검토: **필요 없음, 변경하지 않았다.** `guard.py`(약 90줄)는 상수(키워드/표지/답변 어휘) → 판정 함수 → 보조 함수 1개 → 가드레일 클래스로 구성되어 책임이 분명하고 중복·죽은 코드가 없다
+      (`ScopeGuardrail.async_check`는 `check`에 위임, 미사용 import는 GREEN에서 이미 제거). `tests/support/fake_openai.py`와 `tests/conftest.py`도 작고 5B/5C에서 그대로 재사용된다.
+  - Step 5B/5C로 넘기는 사항
+    - UI의 예시 질문은 `agent.guard.ALLOWED_EXAMPLES`/`REFUSED_EXAMPLES`를 단일 출처로 쓴다. 가드 응답은 `agent.run()`에서 `RunOutput(status=error, content=REFUSAL_MESSAGE)`이므로 5C의 `chat()`이
+      문자열로 정규화한다.
+    - 5C에서 가드의 후속 질문 보강(위 개선안 a/b)과 `ERROR` 로그 처리를 결정한다.
+
 ### Step 5B. Agent용 tool 래퍼 (`agent/assistant_tools.py`)
 - 목표: Step 1~4의 tool을 LLM이 쓰기 좋은 형태(간결한 인자·요약된 결과·확인 절차 강제)로 감싼다 (G1~G3).
 - 범위(예정, 세부는 5B RED에서 확정)
