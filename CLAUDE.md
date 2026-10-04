@@ -11,7 +11,7 @@ Phase 1(구조 개선, behavior-preserving refactoring)은 완료되었다. 현�
 단계다. 학습/예측을 tool로 노출하고, 이를 사용하는 **AGNO 기반 Agent**(LLM은 AGNO `VLLM` 모델 클래스로
 연결)와 간단한 UI(Gradio)를 개발한다. 목적은 성능 개선이 아니라 "현재 코드를 tool로 만들고 Agent가 실제로
 동작하는가"의 검증이다. 입력 데이터는 IrDB 예시 데이터로 한정한다. 세부 목표/비목표는
-[PRD.md](PRD.md)를, 단계별 작업 순서(Step 0 환경 세팅, Step 1~7 TDD)는 [Plan.md](Plan.md)를 따른다.
+[PRD.md](PRD.md)를, 단계별 작업 순서(Step 0 환경 세팅, Step 1~6 TDD, Step 7 E2E smoke/문서)는 [Plan.md](Plan.md)를 따른다.
 (Phase 1 문서는 git history에 있다.)
 
 ## 절대 지켜야 할 제약
@@ -90,7 +90,7 @@ Phase 1(구조 개선, behavior-preserving refactoring)은 완료되었다. 현�
 **순수 구조 이동과 신규 인터페이스 도입을 구분한다:**
 - **순수 구조 이동** (파일/함수 위치만 바꾸고 동작은 바꾸지 않는 작업): Phase 1에서 만든
   characterization test(`tests/characterization/`)가 이미 오라클이므로, 새로 실패하는 테스트를
-  억지로 만들지 않는다. (Phase 2의 Step 1~7은 모두 신규 인터페이스이므로 RED부터 시작한다.) 이동 전후로 기존 테스트가 계속 GREEN을 유지하는지만 확인한다
+  억지로 만들지 않는다. (Phase 2의 Step 1~6은 모두 신규 인터페이스이므로 RED부터 시작한다. Step 7은 신규 프로덕션 코드가 없는 검증/문서 단계라 테스트 커밋 1개, 문서 커밋 1개로 진행했다.) 이동 전후로 기존 테스트가 계속 GREEN을 유지하는지만 확인한다
   (Fowler식 refactoring — "테스트가 실패하는 것을 보는 것"이 아니라 "테스트가 깨지지 않는 것을
   보는 것"이 검증 수단이다).
 - **신규 공개 인터페이스 도입** (예: Phase 2의 registry, 예측/학습 tool, Agent): 문자 그대로의
@@ -106,7 +106,7 @@ Phase 1(구조 개선, behavior-preserving refactoring)은 완료되었다. 현�
 - **Docker는 사용하지 않는다.** vLLM은 이 저장소에서 구동하지 않으며, OpenAI 호환 서버로 분리해
   `VLLM_BASE_URL`, `VLLM_MODEL` 환경변수로 연결한다. 테스트는 LLM을 mock으로 대체해 vLLM 없이 통과해야
   한다. 실제 vLLM 연동 테스트는 `vllm` 마커 + 환경변수가 있을 때만 실행한다.
-- 테스트 시간 가이드: 기존 46개 테스트 전체 약 56초 (Equiformer 모델 생성이 ~8초/건으로 가장 느림).
+- 테스트 시간 가이드: Phase 1의 46개 테스트는 약 56초(Equiformer 모델 생성이 ~8초/건으로 가장 느림), Phase 2 완료 시점의 전체(slow 포함)는 약 3분이다.
   신규 테스트는 tiny 모델/mock을 사용하고, 실제 학습을 도는 테스트는 `slow` 마커로 분리한다.
 - CPU 환경은 **대규모 학습 목적이 아니라 "구조 변경 후 정상 동작 확인(smoke test)" 목적**으로만 사용한다.
 - 실행 예:
@@ -135,8 +135,8 @@ Phase 1(구조 개선, behavior-preserving refactoring)은 완료되었다. 현�
 ./venv_spectrum_cpu/Scripts/python.exe -m pytest tests/
 ```
 
-pytest 설정 파일은 아직 없다. 필요 시 `pytest.ini` 또는 `pyproject.toml`의 `[tool.pytest.ini_options]`를
-Phase 2 Step 0에서 `slow`/`vllm` 마커를 추가한다 (별도 커밋).
+pytest 설정은 루트 `pytest.ini`에 있고 `slow`/`vllm` 마커가 등록되어 있다 (Phase 2 Step 0).
+- `-m "not slow"`: 실제 학습을 도는 테스트 제외, `-m vllm`: 실제 LLM 서버 테스트 (`VLLM_BASE_URL`/`VLLM_MODEL`이 있을 때만 실행, 없으면 skip).
 
 ## 리팩토링 작업 방식
 

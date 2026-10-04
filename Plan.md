@@ -1,7 +1,7 @@
 # Plan — Phase 2: Spectrum Agent
 
 목표/비목표는 [PRD.md](PRD.md)(G1~G6)를 따른다. 모든 Step은 Windows CPU(`venv_spectrum_cpu`)에서 검증한다.
-Step 0은 환경 세팅, Step 1~7은 `.claude/TDD/SKILL.md`의 RED → GREEN → REVIEW 사이클로 진행한다.
+Step 0은 환경 세팅, Step 1~6은 `.claude/TDD/SKILL.md`의 RED → GREEN → REVIEW 사이클로 진행한다. Step 7은 신규 프로덕션 코드가 없는 검증/문서 단계라 7A(테스트), 7B(문서) 커밋 1개씩으로 진행한다.
 커밋은 CLAUDE.md 제약 5/6에 따라 Step마다 **RED 종료 / GREEN 종료 / REVIEW 종료의 세 번**, 제목은
 `Step X RED: ...` / `Step X GREEN: ...` / `Step X REVIEW: ...` 형식으로 하며, **Claude는 커밋 메시지만 작성하고, 커밋은 사용자가 직접 한다.**
 (Step 0은 TDD 대상이 아니므로 논리 변경 단위별로 커밋했고, 그때는 자동 커밋이었다.)
@@ -1054,6 +1054,18 @@ Step 0은 환경 세팅, Step 1~7은 `.claude/TDD/SKILL.md`의 RED → GREEN →
   LLM 서버 요건(OpenAI 호환 chat completions, tool calling 지원, vLLM이면 `--enable-auto-tool-choice --tool-call-parser`), 연결 확인(`pytest -m vllm`), 학습/예측 tool과 화면 사용법, 테스트 실행(`slow`/`vllm` 마커), 라이센스 경계 유의.
   Plan.md/PRD.md/CLAUDE.md의 Step/G 번호 일치 점검, 후속 개선 후보(needs_training 문구, 빈 job_id 등) 정리.
 - 완료 조건: 문서 간 Step/G 번호 일치, README의 명령이 실제로 동작함을 확인(데모 실행).
+
+- **완료 기록 (Step 7B, 커밋 1개)**
+  - README에 "Spectrum Agent" 섹션 추가: 설치(`requirements-agent.txt`, pydantic 2.x 상승과 huggingface-hub 고정 주의), 실행(`python -m agent.ui [--demo] [--port]`, 접속 주소 `http://127.0.0.1:7860`, 서버 터미널 점유/`Ctrl+C`, 다른 컴퓨터는 포트 포워딩),
+    화면 3개 탭 사용법, **실제 LLM 연결**(환경변수 `VLLM_BASE_URL`/`VLLM_MODEL`/`VLLM_API_KEY`, Git Bash/PowerShell 예시, 서버 요건(OpenAI 호환, tool calling, vLLM 옵션), `pytest -m vllm` 확인,
+    환경변수로 안 될 때 `agent/agent.py`의 `build_model`에서 `default_headers`/`http_client`), Agent 동작 요약, 테스트 실행(`slow`/`vllm` 마커), 라이센스 경계.
+  - 문서 정합성 수정: CLAUDE.md의 "pytest 설정 파일은 아직 없다"를 현재 `pytest.ini`(마커 `slow`/`vllm`) 설명으로, 테스트 시간 가이드(전체 약 3분), Step 1~6 TDD / Step 7 예외 반영, Plan.md 머리말에 Step 7의 커밋 방식 반영.
+    Step 번호(0~7)와 G 번호(G1~G6, 성공 기준 1~4)는 PRD/Plan/CLAUDE/TDD 스킬 사이에서 일치함을 grep으로 확인.
+  - 확인: README의 도구 이름이 `agent/assistant_tools.py`와 일치, `python -m agent.ui --demo`는 6B REVIEW에서 실제 브라우저로 확인함 (README 명령 그대로), `pytest -m vllm`은 환경변수가 없으면 2 skipped.
+  - 후속 개선 후보 (진행 여부는 사용자가 결정): `needs_training` 안내 문구(“학습된 어떤 모델의…”), 빈 문자열 `job_id` 처리, 데모 서버의 CPU 학습 안내, assistant tool에서의 비정상 곡선(상대 강도 ≥1) 경고,
+    `mock_llm.respond`의 user 메시지 없음 처리, 가드가 거절하는 후속 표현("다시 해줘", "그만해줘"), `--host` 옵션(다른 컴퓨터 접속이 필요할 때; 인증 없음에 유의).
+  - 범위/경계: 문서만 변경 (README, CLAUDE.md, Plan.md), 코드/테스트/`spectrum/` 변경 없음.
+- **Step 7 완료, Phase 2 완료 조건 충족**: 전체 테스트(slow 포함) 289 passed / 2 skipped.
 
 ---
 
