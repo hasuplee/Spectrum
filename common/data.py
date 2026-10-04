@@ -14,15 +14,19 @@ import utils as utils
 from common.training_utils import load_split_from_npz
 
 
+def build_dataset(data_path, targets):
+    """data_path 접두사('IrDB*' 또는 'PtDB*')로 데이터셋 클래스를 고른다."""
+    if data_path.startswith('IrDB'):
+        return IrDB(root=data_path, dataset_arg=targets)
+    elif data_path.startswith('PtDB'):
+        return PtDB(root=data_path, dataset_arg=targets)
+    raise Exception("data_path must be start 'IrDB' or 'PtDB'")
+
+
 def load_dataset_splits(args):
     """args needs: data_path, targets, split_index_npz, standardize, seed.
     Returns (train_dataset, val_dataset, test_dataset, task_mean, task_std)."""
-    if args.data_path.startswith('IrDB'):
-        dataset = IrDB(root=args.data_path, dataset_arg=args.targets)
-    elif args.data_path.startswith('PtDB'):
-        dataset = PtDB(root=args.data_path, dataset_arg=args.targets)
-    else:
-        raise Exception("data_path must be start 'IrDB' or 'PtDB'")
+    dataset = build_dataset(args.data_path, args.targets)
 
     idx_train, idx_val, idx_test = load_split_from_npz(args.split_index_npz)
     train_dataset = dataset[idx_train]

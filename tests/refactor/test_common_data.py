@@ -69,3 +69,19 @@ def test_build_dataloaders는_batch_size대로_배치를_만든다(tmp_path):
     assert train_batch.num_graphs == 2
     val_batch = next(iter(val_loader))
     assert val_batch.num_graphs == 1
+
+
+def test_build_dataset은_data_path_접두사로_IrDB를_선택한다():
+    # Step 4B REVIEW 리팩토링: load_dataset_splits 안에 있던 데이터셋 클래스 선택을 공개 함수로 추출했다.
+    # predict_tool도 같은 규칙을 쓰므로(중복 제거) 직접 검증한다.
+    import pytest
+    from common.data import build_dataset
+    from dataset.IrDB import IrDB
+
+    dataset = build_dataset("IrDB", ["S1", "S2"])
+
+    assert isinstance(dataset, IrDB)
+    assert len(dataset) == 1024
+    assert dataset.labels == ["S1", "S2"]
+    with pytest.raises(Exception, match="IrDB.*PtDB"):  # 기존 load_dataset_splits의 예외 메시지와 같다
+        build_dataset("Foo", ["S1"])
