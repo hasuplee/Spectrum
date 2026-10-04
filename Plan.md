@@ -147,10 +147,40 @@ Step 0은 환경 세팅, Step 1~7은 `.claude/TDD/SKILL.md`의 RED → GREEN →
   - Step 2B로 넘기는 사항: `reconstruct_spectrum`은 `spectrum.reconstruct`에서 import해 사용한다
     (`common/inference`는 import만, 로직 복사 금지).
 
-### Step 2B. PaiNN: 체크포인트 로드 + 예측 + 곡선 (세부 계획은 2B RED에서 확정)
-- 범위(예정): `common/inference.py`에 `load_checkpoint(path, base_model)`(PaiNN: ckpt `args`로 `painn_adapter.build`,
-  state_dict 로드, `eval()`), task_mean/std 재계산, 배치 → 파라미터 → `reconstruct_spectrum` 곡선 반환.
-- 테스트(예정): tiny PaiNN 저장→로드→`predict()` 수치 일치, 정규화 복원, 곡선 shape/유한성.
+### Step 2B. PaiNN: 체크포인트 로드 + 예측 + 곡선 (`common/inference.py` 확장)
+- 목표: PaiNN 체크포인트에서 모델을 복원하고, 배치를 넣으면 역정규화된 파라미터를 거쳐 스펙트럼 곡선(B, 800)을 반환한다 (G2).
+- 조사 근거: 실제 ckpt(`torch.load(..., weights_only=False)`; `weights_only=True`는 pickle된 `Namespace` 때문에 `UnpicklingError`)는
+  `{'model', 'optimizer', 'args'}`이고, `args`에 `out_channels, radius, num_basis, embed_dim, num_layers, targets, standardize,
+  spectrum_type, lineshape, beta, n_mode, data_path, split_index_npz, seed`가 모두 있다. state_dict 키는 `backbone.*`(DDP 접두사 없음).
+- 범위
+  - 포함 (`common/inference.py`에 추가, 기존 `predict()`는 변경하지 않음)
+    - `LoadedCheckpoint`(dataclass: `model`, `base_model`, `args`, `norm_factor`)
+    - `load_checkpoint(path, base_model, norm_factor=None) -> LoadedCheckpoint`
+      - CPU(`map_location="cpu"`)로 로드, `painn_adapter.build(args)`로 재구성 후 `load_state_dict`, `eval()`.
+      - `norm_factor`를 직접 주면 그대로 사용(재계산 안 함, 데이터셋 접근 안 함).
+      - 안 주면: `args.standardize`가 False면 `[zeros, ones]`, True면 `common.data.load_dataset_splits(args)`로 학습 split의
+        mean/std를 재계산해 `[mean, std]` 텐서로 만든다.
+      - 지원하지 않는 모델 → `ValueError`(2B 시점에서는 `PaiNN`만 지원), 파일 없음 → `FileNotFoundError`.
+    - `predict_curves(loaded, batch) -> torch.Tensor (B, 800)`: 기존 `predict()`로 역정규화된 파라미터를 얻고
+      `spectrum.reconstruct.reconstruct_spectrum(params, args.spectrum_type, kernel_kind=args.lineshape, beta=args.beta)` 호출.
+  - 미포함: Equiformer/Geoformer 로드(2C/2D), 분자 ID → 배치 변환·IrDB 조회(Step 3), 체크포인트 탐색(Step 1 registry),
+    `spectrum/` 수정(`spectrum.reconstruct`는 import만), 학습 코드 수정.
+  - 신뢰 전제: `weights_only=False`는 임의 pickle 실행이 가능하므로 이 저장소가 직접 학습해 만든 ckpt에만 사용한다
+    (docstring에 명시).
+- 테스트 계획 (`tests/refactor/test_inference_checkpoint.py`; tiny PaiNN `embed_dim=8, num_layers=1, num_basis=8`을 `tmp_path`에 저장해 사용,
+  새 함수 import는 각 테스트 안에서 하여 개별 실패로 확인)
+  1. `test_PaiNN_체크포인트를_로드하면_원본_모델과_같은_출력을_낸다` (state_dict 복원 + `eval()` 모드, `predict()` 결과 수치 일치)
+  2. `test_standardize가_False이면_norm_factor는_0과_1이다`
+  3. `test_standardize가_True이면_학습_split에서_평균_표준편차를_다시_계산한다` (실제 IrDB + `splits.0.0.npz`, 기대값은 기존
+     `load_dataset_splits`)
+  4. `test_norm_factor를_직접_주면_데이터셋을_읽지_않는다` (존재하지 않는 split 경로여도 오류 없음)
+  5. `test_predict_curves는_역정규화한_파라미터로_곡선을_복원한다` (shape `(2, 800)`, 유한값, 수동으로 `raw*std+mean`→
+     `reconstruct_spectrum`한 결과와 일치; 물리적으로 말이 되는 평균/표준편차를 주입해 NaN 방지)
+  6. `test_지원하지_않는_모델이면_ValueError가_발생한다`
+  7. `test_체크포인트_파일이_없으면_FileNotFoundError가_발생한다`
+- RED 검증 기준: 7개 모두 `ImportError`(`load_checkpoint`/`predict_curves` 부재, 오타 아님)로 실패해야 한다.
+- 완료 조건(REVIEW 종료 시): 위 7개 + 기존 67개 통과, Step 0 smoke의 실제 PaiNN ckpt로 로드→곡선 반환 확인(독립 검증),
+  `common/`이 `spectrum.reconstruct`를 import만 하고 로직을 복사하지 않음.
 
 ### Step 2C. Equiformer (세부 계획은 2C RED에서 확정)
 - 범위(예정): ckpt `args.task_mean/std` 사용, `equiformer_adapter.build`로 재구성. Equiformer 테스트는 느리므로(약 8초/건) 최소 케이스.
