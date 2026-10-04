@@ -17,10 +17,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import torch
+from torch_geometric.data import Batch
 
 from common.adapters import equiformer_adapter, geoformer_adapter, painn_adapter
 from common.adapters._shared import engine_style_forward
 from common.data import load_dataset_splits
+from geoformer.model.collating_geoformer import GeoformerDataCollator
 from spectrum.reconstruct import reconstruct_spectrum
 
 
@@ -130,4 +132,17 @@ def predict_curves(loaded: LoadedCheckpoint, batch) -> torch.Tensor:
     params = predict(loaded.model, batch, loaded.norm_factor, loaded.base_model)
     return reconstruct_spectrum(
         params, loaded.args.spectrum_type, kernel_kind=loaded.args.lineshape, beta=loaded.args.beta
+    )
+
+
+def build_batch(base_model: str, data_list):
+    """Collates dataset Data objects into the batch type each backbone expects:
+    a torch_geometric Batch for PaiNN/Equiformer, the GeoformerDataCollator dict
+    for Geoformer (called on the Data list directly, as geoformer/data.py does)."""
+    if base_model in ("PaiNN", "Equiformer"):
+        return Batch.from_data_list(data_list)
+    if base_model == "Geoformer":
+        return GeoformerDataCollator(max_nodes=None)(data_list)
+    raise ValueError(
+        f"Unsupported base_model: {base_model!r}. Available: PaiNN, Equiformer, Geoformer"
     )
