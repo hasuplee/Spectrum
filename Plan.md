@@ -1019,11 +1019,41 @@ Step 0은 환경 세팅, Step 1~7은 `.claude/TDD/SKILL.md`의 RED → GREEN →
   - 테스트: 전체 288 passed, 2 skipped (vllm 마커). 학습 산출물(`results_*`)은 확인 후 삭제.
 - **Step 6 완료** (6A + 6B).
 
-## Step 7. E2E smoke 및 정리
+## Step 7. E2E smoke 및 정리 (7A / 7B로 분할, 각 커밋 1개)
 - 목표: 성공 기준 1~4 확인 (G1~G6).
-- 작업: `slow` E2E(tiny 학습 → registry → 예측 → 곡선), 선택적 `vllm` 마커 smoke(`VLLM_BASE_URL` 없으면 skip),
-  README에 Agent 실행 방법과 환경변수 문서화, 최종 전체 테스트 실행.
-- 완료 조건: 전체 테스트 통과(slow 포함), 문서 간 Step/G 번호 일치.
+- 진행 방식: Step 7은 신규 프로덕션 코드가 없는 검증/문서 단계라 RED→GREEN→REVIEW 세 커밋을 적용하지 않고, **성격별로 커밋 1개씩**(테스트 / 문서) 한다 (제약 5: 테스트와 문서를 섞지 않음).
+  7A에서 E2E가 실제 결함을 드러내면 그 결함은 TDD 미니 사이클(실패 테스트 → 수정)로 고치고, 수정 커밋은 7A와 분리한다.
+
+### Step 7A. E2E smoke 테스트 (커밋 1개)
+- 현황 (이미 있음): `slow` 마커의 tiny 학습 → 체크포인트 → 예측 *tool* 테스트(`test_train_job.py`), `vllm` 마커의 실제 LLM 연결 테스트 2개(`test_agent_real_llm.py`, 환경변수가 없으면 skip).
+  이 둘은 새로 만들지 않는다. 부족한 것은 **화면(UI)과 채팅 경로까지 같은 실제 산출물로 이어지는 검증**이다.
+- 범위
+  - 포함: `tests/agent_tools/test_e2e_smoke.py`에 `slow` 테스트 1개 — 데모 LLM + 실제 tiny 학습 + 실제 IrDB를 `gradio_client`로 화면 이벤트를 호출해 한 흐름으로 확인한다.
+    1. `/training_start`(PaiNN, 빠른 설정, 확인 체크) → 완료까지 `/training_status` 폴링 → 상태에 "완료", 로그가 비어 있지 않음
+    2. `/chat`("cn1_cn1_nn1 스펙트럼 예측해줘") → 데모 LLM이 `predict_molecule_spectrum`을 호출하고, 응답에 방금 학습한 체크포인트의 예측 결과(피크 파장)가 담김
+    3. `/predict`("cn1_cn1_nn1", 자동, 실험 포함) → 곡선 1600점(예측 800 + 실험 800), 요약에 PaiNN과 체크포인트 이름
+  - 기존 slow 테스트와 같은 안전장치: 저장소 루트에 `results_PaiNN`/`results_agent_logs`가 이미 있으면 덮어쓰지 않도록 skip, 끝나면 이 테스트가 만든 산출물만 삭제.
+  - 확인만 하고 새로 만들지 않는 것: `vllm` 테스트는 환경변수 없이 실행하면 skip 되고(`pytest -m vllm` → 2 skipped), `slow`는 `-m "not slow"`로 제외된다.
+  - 미포함: 실제 LLM 호출(내부 LLM 연결 후 사용자가 `pytest -m vllm`으로 실행), Geoformer/Equiformer 실학습(느림; 기존 characterization 테스트와 Step 4 smoke 측정으로 갈음).
+- 테스트 계획
+  1. `test_E2E_학습_탭에서_학습하고_채팅과_예측_탭이_같은_체크포인트로_예측한다` (`slow`)
+  2. 전체 테스트 실행: 기본(`-m "not slow"`)과 slow 포함 전체, `-m vllm`(skip 확인).
+- 완료 조건: slow 포함 전체 통과, 산출물이 남지 않음(`git status` 깨끗), Plan.md에 완료 기록. 이 테스트는 구현이 이미 있어 처음부터 통과할 것으로 예상하며, 실패하면 결함 발견으로 보고 별도 사이클로 처리한다.
+
+- **완료 기록 (Step 7A, 커밋 1개)**
+  - 추가: `tests/agent_tools/test_e2e_smoke.py::test_E2E_학습_탭에서_학습하고_채팅과_예측_탭이_같은_체크포인트로_예측한다` (`slow`, 약 24초). 데모 LLM + 실제 PaiNN tiny 학습(빠른 설정: train_steps 20, eval_steps 20, batch_size 4, embed_dim 8, num_layers 1, num_basis 8) + 실제 IrDB를 `gradio_client`로 호출한다.
+    학습 탭 시작 → 상태 "완료"와 체크포인트·로그 → 채팅 "cn1_cn1_nn1 스펙트럼 예측해줘"가 피크 파장을 답함 → 예측 탭이 1600점(예측 800 + 실험 800)과 PaiNN/체크포인트 요약을 돌려줌.
+  - 안전장치 확인: 저장소 루트에 `results_PaiNN`/`results_agent_logs`가 이미 있으면 skip 한다 (실제로 사용자의 이전 실험 산출물 때문에 skip 되는 것을 확인했고, 사용자가 폴더를 정리한 뒤 실행). 끝나면 테스트가 만든 산출물만 삭제한다.
+  - 처음부터 통과했다 (결함 발견 없음, 구현 변경 없음). 모델 품질은 20 step이라 의미가 없으며 이 테스트는 경로 연결만 본다.
+  - 실행 확인: `-m vllm` 2 skipped (환경변수 없음), `-m "not slow"` 287 passed / 2 skipped, 전체(slow 포함) **289 passed / 2 skipped**, 종료 후 `results_*` 없음.
+  - 범위/경계: 테스트 파일과 Plan.md만 변경, 프로덕션 코드·`spectrum/`·수치 변경 없음.
+
+### Step 7B. README와 문서 정리 (커밋 1개)
+- 작업: README에 Agent 섹션 추가 — 설치(venv 만들기와 패키지), 실행(`python -m agent.ui [--demo] [--port]`, 접속 주소 `http://127.0.0.1:7860`, 서버 터미널 점유/Ctrl+C, 다른 컴퓨터는 `--port`/SSH 포워딩),
+  **실제 LLM 연결 방법**(환경변수 `VLLM_BASE_URL`/`VLLM_MODEL`/`VLLM_API_KEY`, 코드 수정이 필요한 경우는 `agent/agent.py`의 `build_model`: 별도 인증 헤더(`default_headers`)/사내 인증서·프록시(`http_client`)),
+  LLM 서버 요건(OpenAI 호환 chat completions, tool calling 지원, vLLM이면 `--enable-auto-tool-choice --tool-call-parser`), 연결 확인(`pytest -m vllm`), 학습/예측 tool과 화면 사용법, 테스트 실행(`slow`/`vllm` 마커), 라이센스 경계 유의.
+  Plan.md/PRD.md/CLAUDE.md의 Step/G 번호 일치 점검, 후속 개선 후보(needs_training 문구, 빈 job_id 등) 정리.
+- 완료 조건: 문서 간 Step/G 번호 일치, README의 명령이 실제로 동작함을 확인(데모 실행).
 
 ---
 
