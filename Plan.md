@@ -416,15 +416,68 @@ Step 0은 환경 세팅, Step 1~7은 `.claude/TDD/SKILL.md`의 RED → GREEN →
     (피크 파장, 필요 시 일부 샘플)해서 돌려준다.
 - **Step 3 전체 완료**: 3A(`build_batch`) → 3B(`predict_spectrum`/`list_molecules`). 전체 101개 테스트 통과.
 
-## Step 4. 학습 tool (신규 인터페이스)
-- 목표: 파라미터 검증/기본값 조회/백그라운드 학습/상태 조회 (G1).
+## Step 4. 학습 tool (신규 인터페이스) — 4A~4B로 분할
+- 목표: Agent/UI가 호출할 학습 tool — 기본값 조회, 파라미터 검증, 사용자 확인 후 백그라운드 학습 실행, 상태 조회 (G1).
+- 분할: 각 하위 Step마다 RED/GREEN/REVIEW 세 번 커밋(제목 `Step 4A RED: ...`).
+  4A 기본값 조회 + 요청 검증 + 명령 조립(프로세스 없음, 순수 함수) → 4B 백그라운드 실행 + 상태 조회(+실제 학습 smoke).
+- 조사 근거
+  - `train.py`가 실제로 노출하는 인자는 `--base-model/--spectrum-type/--batch-size/--data-path` 4개뿐이며(`batch-size` 기본 16), seed=0, fold=0으로 고정되어 하위 스크립트를
+    `os.system("python -m train_X ...")`로 **블로킹 실행**한다. `build_command(args, i_seed, i_fold, split_npz)`는 순수 함수이고(CPU면 Geoformer에 `--accelerator cpu --ndevices 1` 추가),
+    출력 경로는 `results_{모델}/{seed}/{fold}`로 Step 1 registry의 탐색 규칙과 일치한다. 단, 명령이 `python`으로 시작하므로 가상환경 인터프리터는 `sys.executable`로 바꿔야 한다.
+  - 기본값의 출처가 모델마다 다르다. PaiNN/Equiformer는 `get_args_parser()`(add_help=False)가 부작용 없이 `parse_args([])`로 기본값을 돌려준다
+    (PaiNN: lr 1e-3, train-steps 10000, eval-steps 100, embed-dim 512, num-layers 6, num-basis 128, workers 4. Equiformer: lr 5e-4, num-basis 128 …).
+    Geoformer는 `get_args()`가 `sys.argv`를 파싱하고 `log_dir/input.yaml`을 쓰는 부작용이 있어 부적합 → 실제로 train.py가 쓰는 `geoformer/examples/{spectrum_type}.yml`을 읽는다
+    (FC.yml: num_steps 10000, lr 2e-4, eval_every 100, embedding_dim 256, num_layers 9, num_workers 6 …). train.py는 `--batch-size`를 항상 넘기므로 batch_size 기본은 16.
+  - 기본값을 코드에 복사하면 스크립트와 어긋날 수 있으므로 **스크립트/yml에서 읽는다**(테스트도 같은 출처와 비교).
+  - Geoformer yml(`FC.yml`/`GMM.yml`/`Naive.yml`)에서 tool이 노출하는 값(`num_steps, eval_every, lr, num_workers`, 모델 크기)은 세 스펙트럼 종류에서 **모두 동일**하다
+    (다른 것은 `spec_loss_type`, `num_classes`, `dataset_arg`뿐) → `get_training_defaults`는 `spectrum_type`과 무관하게 한 번만 읽는다. `spectrum_type`을 바꾸면 명령의
+    `--conf` 경로(`{type}.yml`)만 달라진다.
+  - CPU에서 기본 설정(10000 step, 512차원 6레이어)은 비현실적으로 오래 걸린다(Step 0 실측: Equiformer 기본 모델 2 step 56초). 그래서 사용자가 step 수와 모델 크기를 줄일 수 있어야 한다.
+  - 제약 2(수치 불변): 스크립트의 기본값은 바꾸지 않는다. tool은 기본값을 **그대로 보여주고**, 사용자가 명시적으로 지정한 값만 CLI 인자로 덮어쓴다. 학습률 등 최적화 하이퍼파라미터는 읽기 전용(덮어쓰기 불가).
+
+### Step 4A. 기본값 조회 + 요청 검증 + 명령 조립 (`agent/tools/train_tool.py`)
+- 목표: 프로세스를 띄우지 않고, "어떤 설정으로 학습하는가"를 조회·검증·명령으로 조립한다.
 - 범위
-  - `agent/tools/train_tool.py` — `get_training_defaults(base_model)`(argparse 기본값을 그대로 노출,
-    **기본값 불변**), `start_training(...)`(검증 후 Popen), `get_training_status()`(프로세스/로그 tail).
-  - train.py가 노출하지 않는 인자(train-steps 등)는 tool이 직접 커맨드를 조립해 전달(기존 스크립트
-    기본값은 건드리지 않음). `train.py`의 `build_command()` 재사용 가능 부분은 재사용.
-- 테스트: 잘못된 모델/spectrum type 거부, 커맨드 조립(subprocess mock), 상태 조회,
-  `slow`: tiny PaiNN 실학습 1건으로 ckpt 생성 확인.
+  - 포함
+    - `get_training_defaults(base_model) -> dict`: `{"status": "ok", "base_model", "spectrum_type": "FC", "data_path": "IrDB", "batch_size": 16, "train_steps", "eval_steps",
+      "workers", "learning_rate", "model_size": {...}, "seed": 0, "fold": 0, "device": "cpu"|"gpu"}`. 값은 스크립트 파서/yml에서 읽는다. 미지원 모델은
+      `{"status": "error", "error": "unsupported_base_model", "supported": [...]}`.
+    - `validate_training_request(base_model, overrides=None) -> dict`: 기본값 위에 overrides를 적용한 **최종 설정**을 반환
+      (`{"status": "ok", "request": {...전체 설정...}}`) 또는 오류(`{"status": "error", "error": "unsupported_base_model"|"unknown_parameter"|"invalid_value", "parameter", "message"}`).
+      덮어쓸 수 있는 파라미터(허용 목록): 공통 `spectrum_type`(Naive/GMM/FC), `data_path`(train.py의 선택지), `batch_size`, `train_steps`, `eval_steps`, `workers`(양의 정수, workers는 0 이상);
+      모델 크기 — PaiNN `embed_dim, num_layers, num_basis` / Equiformer `num_basis` / Geoformer `embedding_dim, ffn_embedding_dim, num_layers, num_heads, num_rbf`. 그 외(lr, seed 등)는 `unknown_parameter`.
+    - `build_training_command(request) -> list[str]`: `train.build_command`를 재사용(문자열을 `shlex.split`, 첫 토큰 `python`을 `sys.executable`로 교체)해 핵심 인자를 만들고, 기본값과 다른 override만
+      모델별 CLI 플래그로 덧붙인다(PaiNN/Equiformer `--train-steps --eval-steps --workers --embed-dim --num-layers --num-basis`, Geoformer `--num-steps --eval-every --num-workers --embedding-dim
+      --ffn-embedding-dim --num-layers --num-heads --num-rbf`).
+    - `training_output_dir(base_model) -> str`: `results_{모델}/0/0` (Step 1 registry와 같은 규칙).
+  - 미포함: 프로세스 실행/상태/로그/중복 실행 방지(4B), 사용자 확인 절차(4B), AGNO 등록(Step 5), `train.py`·`train_*.py` 수정, 학습률 등 하이퍼파라미터 덮어쓰기.
+- 테스트 계획 (`tests/agent_tools/test_train_tool.py`; 새 함수 import는 각 테스트 안에서 하여 개별 실패로 확인)
+  1. `test_PaiNN_기본값은_학습_스크립트의_기본값과_같다` (`train_PaiNN.get_args_parser().parse_args([])`와 `train.py` 기본값(batch 16, FC, IrDB)과 비교)
+  2. `test_Equiformer_기본값은_학습_스크립트의_기본값과_같다`
+  3. `test_Geoformer_기본값은_yml_설정과_같다` (`geoformer/examples/FC.yml`을 직접 읽어 비교, batch_size는 train.py 기본 16)
+  4. `test_지원하지_않는_모델의_기본값_조회는_error를_반환한다`
+  5. `test_override가_없으면_검증_결과는_기본값과_같다`
+  6. `test_override는_기본값_위에_적용된다` (train_steps/eval_steps/모델 크기)
+  7. `test_허용되지_않는_파라미터는_unknown_parameter_error를_반환한다` (예: `lr`, `seed`, Equiformer의 `embed_dim`)
+  8. `test_잘못된_값은_invalid_value_error를_반환한다` (parametrize: `batch_size=0`, `train_steps="abc"`, `spectrum_type="XYZ"`, `data_path="Foo"`, `workers=-1`)
+  9. `test_PaiNN_기본_명령은_학습_스크립트_모듈과_train_py_인자로_조립된다` (`[sys.executable, -m, train_PaiNN, --spectrum-type FC, --batch-size 16, --data-path IrDB, --output-dir results_PaiNN/0/0, --seed 0 ...]`)
+  10. `test_Equiformer_기본_명령은_학습_스크립트_모듈과_train_py_인자로_조립된다`
+  11. `test_Geoformer_기본_명령은_yml과_CPU_플래그를_포함한다` (`--conf geoformer/examples/FC.yml`, CPU 환경이면 `--accelerator cpu --ndevices 1`)
+  12. `test_기본_명령의_핵심_인자는_train_py의_build_command와_같다` (드리프트 방지)
+  13. `test_override는_모델별_CLI_플래그로_변환된다` (PaiNN/Equiformer와 Geoformer의 서로 다른 플래그 이름)
+  14. `test_학습_출력_경로는_registry가_찾는_경로와_같다` (`training_output_dir`에 체크포인트 파일을 만들면 `find_checkpoints`가 찾음)
+- RED 검증 기준: 테스트 함수 14개(parametrize 포함 26개 케이스) 모두 `ModuleNotFoundError: agent.tools.train_tool`로 실패. 기존 101개는 영향 없이 통과.
+- 완료 조건(REVIEW 종료 시): 신규 테스트 + 기존 101개 통과, 실제 `train_*.py`로 만든 명령이 `--help`/인자 파싱 단계에서 거부되지 않음을 확인(세 모델의 argparse가 조립된 인자를 모두 수용),
+  `train.py`·`train_*.py` 변경 없음, 기본값이 스크립트 값과 일치(복사본 없음).
+
+### Step 4B. 백그라운드 실행 + 상태 조회 (세부 계획은 4B RED에서 확정)
+- 범위(예정)
+  - `start_training(base_model, overrides=None, *, confirmed=False, overwrite=False, ...)`: `confirmed=False`면 실행하지 않고 `{"status": "needs_confirmation", "settings": {...}}`로 최종 설정을
+    돌려준다(사용자 확인 절차를 도구 수준에서 강제). 확인되면 4A의 명령을 `subprocess.Popen`(cwd=저장소 루트, stdout/stderr→로그 파일)으로 실행하고 `{"status": "started", "job_id", "command", "log_path", "output_dir"}`.
+  - 한 번에 한 작업만(`{"status": "busy"}`), 이미 학습된 체크포인트가 있으면 `overwrite=True` 없이는 `{"status": "already_trained"}`.
+  - `get_training_status(job_id=None)`: running/finished/failed, return code, 경과 시간, 로그 tail, 학습 완료 후 체크포인트 존재 여부(registry).
+  - 테스트(예정): 실제 서브프로세스(`sys.executable -c ...`로 명령 대체)로 실행/완료/실패/busy/확인 절차, `slow`: tiny PaiNN 실학습 1건으로 체크포인트 생성 후 예측 tool(Step 3)까지 연결.
+- 결정 필요 사항(4B RED 전에 확정): Windows CPU에서 `workers`(PaiNN 기본 4, Geoformer yml 6) 기본값이 문제없이 동작하는지는 4A REVIEW에서 실제 학습으로 확인한다.
 
 ## Step 5. AGNO Agent (신규 인터페이스)
 - 목표: tool을 사용하는 특수 목적 Agent (G3).
