@@ -333,6 +333,22 @@ Step 0은 환경 세팅, Step 1~7은 `.claude/TDD/SKILL.md`의 RED → GREEN →
 - 완료 조건(REVIEW 종료 시): 신규 5개 + 기존 82개 통과, Step 2에서 쓴 실제 체크포인트 3종과 `build_batch`로 만든 IrDB 배치로 예측해 학습 스크립트 결과와
   일치(PaiNN/Equiformer는 PyG `DataLoader` 배치와, Geoformer는 콜레이터 배치와 같은 결과).
 
+- **완료 결과 (Step 3A 종료)**
+  - RED(`b0a6741`): 5개가 `ImportError: cannot import name 'build_batch'`로 실패. GREEN(`235128c`): `common/inference.py`에 `build_batch` 추가(+15줄),
+    신규 5개 통과 + 전체 87개 통과.
+  - REVIEW 확인 사항
+    - 스코프: Plan 범위 안(`build_batch`만). `predict()`/`load_checkpoint`/`geoformer/`/`spectrum/` 변경 없음(GREEN 커밋의 변경 파일은 `common/inference.py` 하나).
+    - 실제 산출물 검증: 실제 체크포인트 3종(PaiNN `painn_tiny`, Equiformer `eq_tiny`, Geoformer `geo_tiny/last.ckpt`)을 로드하고, IrDB test split 103개를
+      `build_batch`로 배치화해 예측 → 학습 스크립트의 `pred.csv`/`p.csv`·`p_spec.csv`와 비교. 세 모델 모두 분자 순서 동일, 곡선 (103, 800) 유한.
+      파라미터 최대 절대차 PaiNN 1.9e-6 / Equiformer 6.6e-7 / Geoformer 3.0e-8, 곡선 최대 절대차 3.7e-6 / 1.4e-5 / 6.0e-7 — Step 2B~2D에서 PyG `DataLoader`/콜레이터로
+      만든 배치로 측정한 값과 동일(`build_batch`가 기존 경로와 같은 배치를 만든다는 증거).
+    - 배치 독립성(3B 단일 분자 예측의 전제): 원자 수가 다른 분자(37/69/49/51) 4개를 한 배치로 예측한 결과와 각 분자를 단독 배치로 예측한 결과가 일치 —
+      최대 절대차 PaiNN 1.9e-6 / Equiformer 1.1e-6(float32 오차 수준) / Geoformer 0(패딩 영향 없음).
+    - 성능(CPU): `build_batch` 0.01초 이하. 103개 예측 PaiNN 0.1초 / Geoformer(tiny) 0.1초 / Equiformer 19.8초.
+    - 리팩토링: 제안 없음(코드 변경 없음).
+  - Step 3B로 넘기는 사항: 단일 분자 예측은 `build_batch(model, [data])`로 충분하다. 빈 `data_list`는 `build_batch`에서 처리하지 않으므로(PyG/콜레이터 오류) 3B가 분자 조회 결과를
+    확인한 뒤에만 호출해야 한다.
+
 ### Step 3B. 예측 tool + 분자 목록 tool (`agent/tools/predict_tool.py`)
 - 목표: IrDB 분자 ID → 예측 곡선 dict, 분자 ID 조회 (G2).
 - 범위
