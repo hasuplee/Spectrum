@@ -737,24 +737,60 @@ Step 0은 환경 세팅, Step 1~7은 `.claude/TDD/SKILL.md`의 RED → GREEN →
       `needs_training` 응답을 사용자에게 어떻게 전달할지를 담는다. 사용자의 "응"이 있었는지는 tool이 검증하지 않으므로 instructions의 책임이다.
     - 가드의 후속 질문 보강과 `ERROR` 로그 처리(5A 기록)도 5C에서 결정한다.
 
-### Step 5C. Agent 조립 + 대화 시나리오 (`agent/agent.py`)
-- 목표: 가드·instructions·tool·대화 기억·`VLLM`을 합친 `build_agent()`와 `chat()` (G3).
-- 범위(예정, 세부는 5C RED에서 확정)
-  - `build_model()`: 환경변수 `VLLM_BASE_URL`, `VLLM_MODEL`(필수), `VLLM_API_KEY`(없으면 `"EMPTY"`)로 `VLLM(...)` 생성. 설정이 없으면 명확한 오류.
-  - `INSTRUCTIONS`: 학습/예측 전용, 범위 밖 질문 거절, "그냥 학습해줘"는 모델이 정해지지 않았으면 모델을 되묻고(PaiNN/Geoformer/Equiformer) 기본값을 보여 준 뒤 확인, 사용자 확인("응" 등)
-    후에만 `start_training_confirmed`, 덮어쓰기는 기존 결과 삭제를 분명히 알리고 확인, 예측인데 학습된 모델이 없으면 학습을 먼저 제안, 분자 ID가 없으면 `list_molecule_ids`로 안내.
-  - `build_agent(model=None, project_root=...)`: `Agent(model, tools=build_assistant_tools(), instructions, pre_hooks=[ScopeGuardrail()], db=InMemoryDb(), add_history_to_context=True,
-    num_history_runs=…, tool_call_limit=…, telemetry=False)`.
-  - `chat(agent, message, session_id) -> str`: 가드가 거절한 경우(`RunOutput.status == error`)도 문자열 응답으로 정규화.
-  - 가짜 OpenAI 서버로 **다중 턴 대화 시나리오** 검증: "그냥 학습해줘" → (LLM이 `show_training_defaults`/`preview_training` 호출) → 질문 → 확인 → `start_training_confirmed`, "이 분자의 spectrum 예측해줘"
-    (모델 없음 → needs_training 안내), 범위 밖 질문 거절, instructions/tools가 요청에 실리는지, 이전 턴 기억.
-  - **데모용 규칙 기반 가짜 LLM 서버**(`agent/demo/`, 사용자 요청): 키워드 규칙으로 tool 호출을 흉내 내는 로컬 OpenAI 호환 서버(`python -m agent.demo`로 서버 + 채팅 실행). LLM 키 없이
-    Agent 전체(가드, tool, 학습 확인 절차, 백그라운드 학습, 예측)를 직접 채팅으로 확인하고 Step 6 UI도 시연할 수 있다. 예: "그냥 학습해줘" → 모델 되묻기, "PaiNN으로" → 기본값 미리보기,
-    "응" → 학습 시작, "예측해줘" → 예측(없으면 학습 안내). **진짜 LLM이 아니며** 규칙에 없는 표현에는 "이해하지 못했다"고 답한다는 점을 문서와 출력에 분명히 표시한다. 프로젝트의 정식
-    기능이 아니라 개발/시연 도구이므로 `agent/demo/`에 분리하고, 5C의 다중 턴 시나리오 테스트도 이 서버로 구동해 스크립트 응답보다 견고하게 검증한다. 5C가 커지면 5C RED에서
-    `5C-1 Agent 조립` / `5C-2 데모 서버와 시나리오`로 나눌지 다시 제안한다.
-  - 선택 테스트(`vllm` 마커, `VLLM_BASE_URL`이 없으면 skip): 실제 vLLM(또는 내부 LLM) 서버에 같은 Agent를 연결해 간단한 질문으로 연결 확인.
-- 미포함: UI(Step 6), vLLM 서버 구동/설정(프로젝트 범위 밖), LLM 응답 품질 평가(소형 모델 성능은 목표가 아님).
+### Step 5C. Agent 조립 + 대화 시나리오 — 5C-1~5C-2로 분할
+- 목표: 가드(5A)·tool(5B)·instructions·대화 기억·`VLLM`을 합친 Agent와 `chat()`, 그리고 키 없이 직접 채팅해 볼 수 있는 데모 서버 (G3, G5).
+- 분할(제안): 5C-1 Agent 조립 + 가짜 서버 시나리오 테스트 → 5C-2 규칙 기반 데모 서버(`agent/demo/`) + `python -m agent.demo` + 선택적 실제 LLM 연결 테스트.
+  각 하위 Step마다 RED/GREEN/REVIEW 세 번 커밋(제목 `Step 5C-1 RED: ...`). 5C-2의 세부 계획은 5C-2 RED에서 확정한다.
+- 조사 근거 (agno 3.1.1, 로컬 실험)
+  - **LLM 연결 실패**: 서버에 연결할 수 없을 때 `agent.run()`은 예외를 던지지 않고 `RunOutput(status=error, content="Connection error.")`를 반환하며 SDK 기본 재시도 때문에 **약 7.5초** 걸린다.
+    서버가 500을 돌려줘도 같은 형태(재시도 포함 약 1.5초)다 → `chat()`이 오류 응답을 사용자용 문구로 바꿔야 하고, `build_model`은 재시도를 줄인다(`max_retries=1`).
+    가드 거절도 같은 `status=error`이므로 내용이 `REFUSAL_MESSAGE`이면 그대로 돌려준다.
+  - **다중 턴 기억**: `InMemoryDb` + `add_history_to_context`이면 다음 턴 요청에 이전 턴의 `assistant(tool_calls)`, `tool` 결과, `assistant` 텍스트가 모두 들어간다
+    (역할 순서 `user, assistant, tool, assistant, user`). "미리보기 → 응 → 시작" 흐름에 필요한 정보가 전달된다.
+  - **세션 분리**: Agent 인스턴스마다 `InMemoryDb`를 두면 같은 `session_id`여도 기억이 공유되지 않는다. 5B의 미리보기 상태도 도구 인스턴스별이므로 **세션마다 Agent를 하나씩 만든다**
+    (UI는 브라우저 세션당 Agent 하나를 유지).
+  - `VLLM`은 `max_retries`, `timeout`, `default_headers`를 받는다(내부 LLM의 토큰 헤더 등 대응 가능).
+
+### Step 5C-1. Agent 조립 (`agent/agent.py`) + 가드 보강
+- 목표: `build_model`/`INSTRUCTIONS`/`build_agent`/`chat`을 구현하고, 가짜 OpenAI 서버로 다중 턴 대화 시나리오를 검증한다.
+- 범위
+  - 포함
+    - `build_model(environ=None) -> VLLM`: `VLLM_BASE_URL`, `VLLM_MODEL`은 **필수**(없으면 누락된 변수 이름을 담은 `ModelConfigError(ValueError)`; 기본 localhost로 조용히 붙지 않게 함),
+      `VLLM_API_KEY`는 없으면 `"EMPTY"`(AGNO `VLLM`이 키를 요구하므로 인증 없는 서버용 더미). `max_retries=1`. 나머지는 AGNO 기본값.
+    - `INSTRUCTIONS`(한국어): ① 학습/예측 전용, 그 외는 정중히 거절하고 할 수 있는 일을 안내 ② 학습 요청: 모델이 정해지지 않았으면 PaiNN/Geoformer/Equiformer 중 무엇인지 되묻기 →
+      `show_training_defaults`로 기본값을 보여 주기(CPU면 step이 많으면 오래 걸림을 알림) → `preview_training` → 최종 설정을 보여 주고 확인 → **사용자가 명시적으로 동의한 뒤에만**
+      `start_training_confirmed`(같은 인자) ③ `will_overwrite`면 기존 결과가 삭제됨을 알리고 별도 확인 후 `overwrite=True` ④ 학습 상태는 `check_training_status`로 확인해 알려 주고 완료되면 예측 안내,
+      실패하면 로그 마지막 줄 전달 ⑤ 예측은 분자 ID가 필요하며 모르면 `list_molecule_ids`로 도움, `needs_training`이면 학습을 먼저 제안, 결과는 피크 파장과 샘플 강도로 설명하고 수치를 지어내지 않기
+      ⑥ `busy`/`already_trained`/`not_previewed` 응답은 이유를 사용자에게 전달하기.
+    - `build_agent(model=None, project_root=저장소루트, results_root=None) -> Agent`: `Agent(model, tools=build_assistant_tools(...)(새 인스턴스), instructions=INSTRUCTIONS, pre_hooks=[ScopeGuardrail()],
+      db=InMemoryDb(), add_history_to_context=True, num_history_runs=10, tool_call_limit=8, telemetry=False)`. `model`이 없으면 `build_model()`.
+    - `chat(agent, message, session_id="default") -> str`: `agent.run`의 결과를 문자열로 정규화 — 정상이면 `content`, 가드 거절이면 `REFUSAL_MESSAGE`, 그 외 오류(`status=error`)면 LLM 서버 호출 실패를
+      알리는 문구(원인 `content` 포함, `VLLM_BASE_URL` 확인 안내).
+    - **가드 보강(5A 리뷰의 개선안 a, 사용자 승인 필요)**: 실제 대화에서 쓰일 만한 후속 표현이 거절되는 것을 막기 위해 허용 표현을 보수적으로 추가 —
+      `진행 상황`, `설정`, `default`, `결과`, `그래프`, `실패`, `얼마나`, `끝났`, `뭘 할 수`, `사용법`, `기본으로`. 정의형 질문 거절 규칙(예: "결과가 뭐야?")은 그대로 유지.
+      이력 인지 가드(개선안 b)는 이번에 하지 않는다. `ERROR` 로그 한 줄(5A 기록)은 서버 콘솔 소음일 뿐이라 변경하지 않는다.
+  - 미포함: 데모 서버와 `python -m agent.demo`(5C-2), UI(Step 6), 실제 LLM 연결 테스트(5C-2), LLM 응답 품질 평가.
+- 테스트 계획 (`tests/agent_tools/test_agent.py`, `tests/agent_tools/test_guard.py` 추가; 가짜 OpenAI 서버 `fake_llm` 사용, 학습은 4B 방식의 가짜 명령)
+  1. `test_build_model은_필수_환경변수가_없으면_누락된_이름을_알려준다` / `test_build_model은_환경변수로_VLLM을_구성한다` (API 키 기본 `"EMPTY"`, `max_retries == 1`, 값 전달)
+  2. `test_instructions에는_학습_확인_절차와_덮어쓰기_경고와_범위_제한이_담겨_있다` (tool 이름, 확인/동의, `overwrite`/삭제, 거절 문구 등 핵심 규칙 포함)
+  3. `test_build_agent는_tool_7개_가드_대화기억을_갖춘다` (tool 이름, `pre_hooks`에 `ScopeGuardrail`, `InMemoryDb`, `telemetry` 꺼짐)
+  4. `test_Agent_요청에는_instructions와_tool_7개가_실린다` (가짜 서버가 받은 요청의 system 메시지와 `tools`)
+  5. `test_범위_밖_질문은_chat이_거절_문구를_돌려주고_LLM을_호출하지_않는다`
+  6. `test_학습_시나리오_미리보기_후_사용자_확인으로_학습이_시작된다` (1턴: LLM이 `preview_training` 호출 후 확인 질문, 2턴 "응": 이전 턴의 tool 호출/결과가 요청에 포함되고 LLM이
+     `start_training_confirmed` 호출 → 학습 프로세스 실행)
+  7. `test_미리보기_없이_학습_시작을_시도하면_tool이_거부한다` (LLM이 바로 `start_training_confirmed` 호출 → 요청에 `not_previewed` 결과가 실리고 프로세스는 시작되지 않음)
+  8. `test_학습된_모델이_없을_때_예측_시나리오는_needs_training_결과를_LLM에_전달한다`
+  9. `test_세션마다_Agent가_독립적이다` (A에서 미리보기, B에서 확인 실행 → `not_previewed`, 기억도 분리)
+  10. `test_chat은_LLM_서버_오류를_사용자용_문구로_바꾼다` (닫힌 포트 + `max_retries=0`로 빠르게)
+  11. `test_chat은_정상_응답_텍스트를_그대로_돌려준다`
+  12. (test_guard 추가) `test_대화에서_쓰이는_후속_표현은_범위_안이다` (parametrize: "진행 상황 알려줘", "기본 설정으로 진행해줘", "default로 해줘", "얼마나 걸려?", "끝났어?", "결과 보여줘", "그래프 보여줘",
+      "왜 실패했어?", "뭘 할 수 있어?", "사용법 알려줘", "기본으로 해줘") + 기존 거절 예시가 여전히 거절되는지(`test_학습과_무관한_질문은_범위_밖이다`, `test_키워드가_있어도_정의를_묻는_질문은_범위_밖이다`)
+- RED 검증 기준: `agent.agent` 부재(`ModuleNotFoundError`)로 실패하는 테스트와, 가드 보강 테스트(새 허용 표현이 현재 거절됨)가 실패. 기존 195개는 영향 없이 통과.
+- 완료 조건(REVIEW 종료 시): 신규 + 기존 테스트 통과, 가드 폭넓은 문장 시험(5A REVIEW의 64문장 + 후속 표현)에서 오판정 재점검, instructions를 한 번 읽고 tool 이름·응답 상태 이름이 실제 코드와 일치하는지 대조.
+
+### Step 5C-2. 규칙 기반 데모 서버 + 실제 LLM 연결 테스트 (세부 계획은 5C-2 RED에서 확정)
+- 범위(예정): `agent/demo/mock_llm_server.py`(키워드 규칙으로 tool 호출을 흉내 내는 OpenAI 호환 서버, 진짜 LLM이 아님을 명시), `python -m agent.demo`(서버 + 채팅), 이 서버로 구동하는 다중 턴 시나리오 테스트,
+  `vllm` 마커 선택 테스트(`VLLM_BASE_URL` 없으면 skip).
 
 ## Step 6. UI (신규 인터페이스)
 - 목표: 간단한 UI에서 학습/예측 수행 (G4).

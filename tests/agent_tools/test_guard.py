@@ -66,7 +66,27 @@ def test_학습과_무관한_질문은_범위_밖이다(text):
     assert is_in_scope(text) is False
 
 
-@pytest.mark.parametrize("text", ["PaiNN이 뭐야?", "스펙트럼이 뭐야?", "학습이란 무엇인가요"])
+@pytest.mark.parametrize("text", [
+    "진행 상황 알려줘",
+    "기본 설정으로 진행해줘",
+    "default로 해줘",
+    "얼마나 걸려?",
+    "끝났어?",
+    "결과 보여줘",
+    "그래프 보여줘",
+    "왜 실패했어?",
+    "뭘 할 수 있어?",
+    "사용법 알려줘",
+    "기본으로 해줘",
+])
+def test_대화에서_쓰이는_후속_표현은_범위_안이다(text):
+    # Step 5C-1 가드 보강 (5A 리뷰에서 발견: 도메인 단어가 없는 정상 후속 질문이 거절되던 문제)
+    from agent.guard import is_in_scope
+
+    assert is_in_scope(text) is True
+
+
+@pytest.mark.parametrize("text", ["PaiNN이 뭐야?", "스펙트럼이 뭐야?", "학습이란 무엇인가요", "결과가 뭐야?"])
 def test_키워드가_있어도_정의를_묻는_질문은_범위_밖이다(text):
     from agent.guard import is_in_scope
 
