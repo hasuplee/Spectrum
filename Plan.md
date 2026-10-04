@@ -582,20 +582,93 @@ Step 0은 환경 세팅, Step 1~7은 `.claude/TDD/SKILL.md`의 RED → GREEN →
     - Geoformer 체크포인트 파일 이름(`epoch=0-val_loss=12.1353.ckpt`)에는 `=`가 있어 경로 인자로 쓸 때 주의(현재 코드는 경로를 인자 문자열 없이 `Path`로만 다룸).
 - **Step 4 전체 완료**: 4A(기본값 조회/검증/명령 조립) → 4B(CPU 기본 워커, 확인 절차, 백그라운드 실행, 상태 조회). 전체 144개 테스트 통과.
 
-## Step 5. AGNO Agent (신규 인터페이스)
-- 목표: tool을 사용하는 특수 목적 Agent (G3).
-- 범위: `agent/agent.py` — `build_agent(model=None)`; 기본은 `VLLM(id=$VLLM_MODEL, base_url=$VLLM_BASE_URL)`,
-  테스트에서는 mock 모델 주입. instructions: 학습/예측 이외 질문 거절, 학습 요청 시 기본값 제시 후
-  확인/모델 선택 질문, 예측 시 ckpt 없으면 학습 선행 안내. tool 등록: Step 1/3/4의 함수.
-  **범위 가드(1차 방어)**: `agent/guard.py` — `is_in_scope(text)`가 학습/예측 관련 키워드(학습, 예측, spectrum,
-  PaiNN/Geoformer/Equiformer, 분자 ID, 기본값, 상태 등)로 판별. 범위 밖이면 LLM을 호출하지 않고 고정 거절
-  문구를 반환. instructions(2차 방어)는 가드를 통과한 애매한 질문(예: "PaiNN이 뭐야?")도 학습/예측 요청이
-  아니면 거절하도록 명시.
-- 테스트(mock 모델): tool 등록 목록, 환경변수 설정 → VLLM 객체 생성, tool-call 시나리오별 dispatch,
-  instructions에 도메인 제한 규칙 포함. 범위 밖 질문 거절은 mock 응답 흐름 + (선택) 실제 vLLM smoke.
-  가드 테스트(vLLM 불필요): 거절 — "오늘 날씨가 뭐야?", "반도체는 뭐지", "OLED의 정의는", "파이썬 코드 짜줘";
-  통과 — "PaiNN으로 학습해줘", "그냥 학습해줘", "이 분자의 spectrum 예측해줘", "학습 상태 알려줘".
-  가드가 거절하면 mock 모델이 호출되지 않음을 확인.
+## Step 5. AGNO Agent (신규 인터페이스) — 5A~5C로 분할
+- 목표: Step 1~4의 tool을 사용하는 **학습/예측 전용** Agent. AGNO로 구현하고 LLM은 `agno.models.vllm.VLLM`으로 연결한다 (G3, G5).
+  "그냥 학습해줘" → 기본값을 보여 주고 모델을 물은 뒤 사용자 확인 후 학습, 예측인데 학습된 모델이 없으면 학습을 먼저 제안, 학습/예측과 무관한 질문은 거절.
+- 분할: 각 하위 Step마다 RED/GREEN/REVIEW 세 번 커밋(제목 `Step 5A RED: ...`). 5A 범위 가드 → 5B Agent용 tool 래퍼 → 5C Agent 조립 + 대화 시나리오 테스트.
+- **LLM 방침(사용자 확정)**: 이 프로젝트의 개발·테스트 중에는 진짜 LLM/API 키 없이 **mock**(가짜 OpenAI 호환 서버)만 쓴다. 진짜 LLM 연결은 프로젝트 종료 후 내부 LLM API(URL, 토큰)를
+  환경변수(`VLLM_BASE_URL`, `VLLM_API_KEY`, `VLLM_MODEL`)만 바꿔 연결한다. 사용자가 이전에 AGNO `VLLM`을 `base_url`/API 키로 연결해 본 경험이 있어 연결 방식 자체는 검증된 것으로 본다.
+  mock으로 확인되는 것은 연결·tool 실행·확인 절차·가드·다중 턴 기억이며, "LLM이 instructions를 잘 따르는가/tool을 올바르게 고르는가"는 확인할 수 없다(실제 LLM 연결 후 `vllm` 마커 선택
+  테스트로 확인). 내부 LLM에서 미리 확인할 것은 **tool 호출(function calling) 지원 여부**(vLLM이면 `--enable-auto-tool-choice --tool-call-parser <모델별>`)이며, Step 7의 README에 연결 가이드로 포함한다.
+- 조사 근거 (agno 3.1.1 소스 확인 + 로컬 실험, 실험 스크립트는 저장소 밖)
+  - `VLLM(OpenAILike)`은 `api_key`가 없으면 환경변수 `VLLM_API_KEY`를 요구하고 없으면 `ModelAuthenticationError`를 낸다(인증이 없는 vLLM 서버에도 더미 키가 필요). `base_url`은 인자 또는
+    `VLLM_BASE_URL`(기본 `http://localhost:8000/v1/`). → 우리 `build_model()`은 `VLLM_API_KEY`가 없으면 `"EMPTY"`를 쓴다.
+  - **가드레일**: `Agent(pre_hooks=[BaseGuardrail 하위 클래스])`에서 `InputCheckError`를 던지면 `agent.run()`이 예외 없이 `RunOutput(status=error, content=<오류 메시지>)`를 반환하고
+    **LLM 서버는 호출되지 않는다**(요청 수 0 확인). → 범위 가드를 AGNO 가드레일로 구현하면 "AGNO Agent의 일부"이면서 vLLM 서버 없이 테스트할 수 있다.
+  - **테스트용 LLM**: 로컬 `http.server`로 만든 가짜 OpenAI 호환 서버에 **실제 `VLLM` 클래스**를 연결하면 tool 호출 흐름 전체가 돈다(요청 1: `tools`와 `instructions`(system 메시지) 포함 →
+    tool 실행 → 요청 2: `tool` 결과 포함 → 최종 텍스트). 즉 mock 모델 클래스를 따로 만들지 않고도 `VLLM` 연결 경로까지 검증된다.
+  - **대화 기억**: `add_history_to_context=True`만으로는 이전 턴이 다음 요청에 들어가지 않는다(DB 없음). `db=agno.db.in_memory.InMemoryDb()`를 붙이면 이전 `user`/`assistant` 턴이
+    들어가고 `session_id`가 다르면 기억이 분리된다 → "그냥 학습해줘 → 모델 질문 → PaiNN으로" 같은 다중 턴에 필요. (프로세스 메모리 안에서만 유지)
+  - 가드가 현재 메시지만 보면 후속 답변("응", "PaiNN", "취소")이 도메인 키워드가 없어 막힌다 → 가드는 짧은 후속 답변 허용 목록을 가져야 한다.
+  - 한 번의 `predict_spectrum` 결과(곡선 800점×2, 약 20KB)는 LLM 컨텍스트에 부적합 → Agent용 tool은 요약만 돌려준다(3B/4B 기록).
+
+### Step 5A. 범위 가드 + 가짜 LLM 서버 테스트 기반 (`agent/guard.py`, `tests/support/fake_openai.py`)
+- 목표: 학습/예측과 무관한 질문을 **LLM 호출 전에** 거절한다 (G3).
+- 범위
+  - 포함
+    - `agent/guard.py`
+      - `is_in_scope(text) -> bool`: 휴리스틱(키워드 + 짧은 후속 답변 + 정의형 질문 제외). 판정 규칙:
+        1. 빈 입력/공백만 → False.
+        2. 정의·설명을 묻는 표현(`뭐야/뭐지/뭔가요/무엇/정의/설명/이란/what is/define`)이 있고 **행동 표현**(`해줘/해 줘/해주세요/시작/실행/돌려/보여/알려/조회/확인/취소/중단`)이 없으면 False
+           (예: "PaiNN이 뭐야?", "스펙트럼이 뭐야?").
+        3. 짧은 후속 답변 허용 목록과 **정확히 일치**하면 True (`응/네/예/아니/아니요/좋아/좋아요/그래/맞아/취소/중단/진행/확인/ok/yes/no/y/n`, 구두점·공백 제외).
+        4. 도메인 키워드가 하나라도 있으면 True: `학습/훈련/train/예측/predict/스펙트럼/spectrum/painn/geoformer/equiformer/모델/체크포인트/checkpoint/분자/molecule/irdb/step/스텝/배치/batch/
+           기본값/파라미터/parameter/상태/로그/워커/worker` 및 분자 ID 형태(예: `cn1_cn1_nn1`).
+        5. 그 외 False.
+      - `REFUSAL_MESSAGE`: 고정 거절 문구(할 수 있는 일과 예시 질문 포함).
+      - `ScopeGuardrail(BaseGuardrail)`: `check`/`async_check`에서 `is_in_scope`가 False이면 `InputCheckError(REFUSAL_MESSAGE)`.
+      - `ALLOWED_EXAMPLES`, `REFUSED_EXAMPLES`: UI(Step 6)가 쓰는 예시 질문의 단일 출처. 테스트가 둘 다 가드 판정과 일치함을 검증.
+    - `tests/support/fake_openai.py` + `tests/conftest.py`의 `fake_llm` fixture: 스크립트된 응답을 돌려주는 가짜 OpenAI 호환 서버(`FakeOpenAIServer`: `base_url`, 받은 요청 기록 `requests`,
+      응답 큐 `queue_text`/`queue_tool_calls`, 큐가 비었는데 요청이 오면 500). 5A~5C와 Step 6/7이 공유. 테스트 코드이므로 RED 커밋에 포함하고, 구현 없이 동작을 별도로 점검했다
+      (텍스트 응답, tool 호출 2회 요청 흐름, 가드 차단 시 요청 0건).
+  - 미포함: tool 래퍼(5B), Agent 조립/instructions/VLLM 환경변수(5C), 실제 vLLM 서버, 의미 기반(임베딩/LLM) 범위 판별.
+  - 한계(의도된 것): 키워드 휴리스틱이므로 정의형 질문이 행동 표현과 함께 오면("PaiNN 정의 알려줘") 가드를 통과한다 → 5C의 instructions가 두 번째 방어선이다.
+- 테스트 계획 (`tests/agent_tools/test_guard.py`, `tests/support/test_fake_openai.py` 성격의 검증은 가드 테스트 안에서 함께; 새 함수 import는 각 테스트 안에서)
+  1. `test_학습과_예측_요청은_범위_안이다` (parametrize: "PaiNN으로 학습해줘", "그냥 학습해줘", "Geoformer로 학습 시작해줘", "학습 기본값 보여줘", "학습 상태 알려줘", "이 분자의 spectrum 예측해줘",
+     "cn1_cn1_nn1 스펙트럼 예측해줘", "사용 가능한 모델 알려줘", "분자 목록 보여줘", "20 step으로 해줘", "배치 크기는 8로 해줘")
+  2. `test_짧은_후속_답변은_범위_안이다` (parametrize: "응", "네", "네, 진행해줘", "아니요", "취소", "PaiNN", "yes", "OK!")
+  3. `test_학습과_무관한_질문은_범위_밖이다` (parametrize: "오늘 날씨가 뭐야?", "반도체는 뭐지", "OLED의 정의는", "파이썬 코드 짜줘", "너는 누구야", "맛집 추천해줘", "", "   ")
+  4. `test_키워드가_있어도_정의를_묻는_질문은_범위_밖이다` (parametrize: "PaiNN이 뭐야?", "스펙트럼이 뭐야?", "학습이란 무엇인가요")
+  5. `test_예시_질문은_가드_판정과_일치한다` (`ALLOWED_EXAMPLES`는 모두 통과, `REFUSED_EXAMPLES`는 모두 거절, 각각 최소 4개)
+  6. `test_ScopeGuardrail은_범위_밖_입력에_InputCheckError를_범위_안_입력은_통과시킨다`
+  7. `test_범위_밖_질문은_LLM_서버를_호출하지_않고_거절_문구를_반환한다` (실제 `Agent` + `VLLM` + 가짜 서버: 서버 요청 수 0, `RunOutput.content == REFUSAL_MESSAGE`)
+  8. `test_범위_안_질문은_LLM_서버로_전달된다` (서버 요청 수 1, 응답 텍스트 반환)
+- RED 검증 기준: 테스트 함수 8개(parametrize 포함 34 케이스) 모두 `agent.guard` 부재(`ModuleNotFoundError`)로 실패. 기존 144개는 영향 없이 통과(새 `tests/conftest.py` 포함).
+- 완료 조건(REVIEW 종료 시): 신규 + 기존 테스트 통과, **실험으로 쓴 질문 전체**(PRD의 거절 예시와 동작 예시)가 기대대로 판정됨, `agno` 로그 출력 소음 확인(거절 시 ERROR 로그 줄이 남는지 — 필요하면 조용히 처리할지 결정).
+
+### Step 5B. Agent용 tool 래퍼 (`agent/assistant_tools.py`)
+- 목표: Step 1~4의 tool을 LLM이 쓰기 좋은 형태(간결한 인자·요약된 결과·확인 절차 강제)로 감싼다 (G1~G3).
+- 범위(예정, 세부는 5B RED에서 확정)
+  - `build_assistant_tools(project_root=저장소루트) -> list[callable]`: 호출마다 독립적인 상태(마지막 학습 미리보기)를 가진 클로저 목록. AGNO는 함수의 시그니처·docstring으로 tool 스키마를 만든다.
+    - `list_trained_models()` — registry 기반으로 모델별 학습 여부.
+    - `show_training_defaults(base_model)` — `get_training_defaults`.
+    - `preview_training(base_model, settings=None)` — `start_training(confirmed=False)`로 최종 설정을 보여 주고 이 미리보기를 기억.
+    - `start_training_confirmed(base_model, settings=None, overwrite=False)` — **직전 미리보기와 같은 설정일 때만** 실행(`start_training(confirmed=True)`), 아니면 `{"status": "error", "error": "not_previewed"}`.
+      (LLM이 설정을 보여 주는 단계를 건너뛰지 못하게 하는 tool 수준의 안전장치. 사용자의 "응"은 instructions가 책임.)
+    - `check_training_status(job_id=None)` — 상태, 경과 시간, 로그 마지막 5줄만, 체크포인트 유무.
+    - `list_molecule_ids(query="", limit=10)`.
+    - `predict_molecule_spectrum(molecule_id, base_model=None)` — 요약만: 모델, 피크 파장, 400~790nm를 50nm 간격으로 샘플링한 상대 강도, 체크포인트 이름. `needs_training`은 "먼저 학습" 안내를 그대로 전달.
+  - 미포함: Agent 조립(5C), UI용 전체 곡선(UI는 `predict_spectrum`을 직접 호출).
+- 테스트(예정): 각 래퍼의 반환 요약 크기(작음)와 내용, 미리보기 없이 확인 실행 시 `not_previewed`, 미리보기와 다른 설정 실행 거부, 가짜 학습 명령(4B 방식)으로 start→status→예측 연결, 예측 요약이 전체 곡선과 일치.
+
+### Step 5C. Agent 조립 + 대화 시나리오 (`agent/agent.py`)
+- 목표: 가드·instructions·tool·대화 기억·`VLLM`을 합친 `build_agent()`와 `chat()` (G3).
+- 범위(예정, 세부는 5C RED에서 확정)
+  - `build_model()`: 환경변수 `VLLM_BASE_URL`, `VLLM_MODEL`(필수), `VLLM_API_KEY`(없으면 `"EMPTY"`)로 `VLLM(...)` 생성. 설정이 없으면 명확한 오류.
+  - `INSTRUCTIONS`: 학습/예측 전용, 범위 밖 질문 거절, "그냥 학습해줘"는 모델이 정해지지 않았으면 모델을 되묻고(PaiNN/Geoformer/Equiformer) 기본값을 보여 준 뒤 확인, 사용자 확인("응" 등)
+    후에만 `start_training_confirmed`, 덮어쓰기는 기존 결과 삭제를 분명히 알리고 확인, 예측인데 학습된 모델이 없으면 학습을 먼저 제안, 분자 ID가 없으면 `list_molecule_ids`로 안내.
+  - `build_agent(model=None, project_root=...)`: `Agent(model, tools=build_assistant_tools(), instructions, pre_hooks=[ScopeGuardrail()], db=InMemoryDb(), add_history_to_context=True,
+    num_history_runs=…, tool_call_limit=…, telemetry=False)`.
+  - `chat(agent, message, session_id) -> str`: 가드가 거절한 경우(`RunOutput.status == error`)도 문자열 응답으로 정규화.
+  - 가짜 OpenAI 서버로 **다중 턴 대화 시나리오** 검증: "그냥 학습해줘" → (LLM이 `show_training_defaults`/`preview_training` 호출) → 질문 → 확인 → `start_training_confirmed`, "이 분자의 spectrum 예측해줘"
+    (모델 없음 → needs_training 안내), 범위 밖 질문 거절, instructions/tools가 요청에 실리는지, 이전 턴 기억.
+  - **데모용 규칙 기반 가짜 LLM 서버**(`agent/demo/`, 사용자 요청): 키워드 규칙으로 tool 호출을 흉내 내는 로컬 OpenAI 호환 서버(`python -m agent.demo`로 서버 + 채팅 실행). LLM 키 없이
+    Agent 전체(가드, tool, 학습 확인 절차, 백그라운드 학습, 예측)를 직접 채팅으로 확인하고 Step 6 UI도 시연할 수 있다. 예: "그냥 학습해줘" → 모델 되묻기, "PaiNN으로" → 기본값 미리보기,
+    "응" → 학습 시작, "예측해줘" → 예측(없으면 학습 안내). **진짜 LLM이 아니며** 규칙에 없는 표현에는 "이해하지 못했다"고 답한다는 점을 문서와 출력에 분명히 표시한다. 프로젝트의 정식
+    기능이 아니라 개발/시연 도구이므로 `agent/demo/`에 분리하고, 5C의 다중 턴 시나리오 테스트도 이 서버로 구동해 스크립트 응답보다 견고하게 검증한다. 5C가 커지면 5C RED에서
+    `5C-1 Agent 조립` / `5C-2 데모 서버와 시나리오`로 나눌지 다시 제안한다.
+  - 선택 테스트(`vllm` 마커, `VLLM_BASE_URL`이 없으면 skip): 실제 vLLM(또는 내부 LLM) 서버에 같은 Agent를 연결해 간단한 질문으로 연결 확인.
+- 미포함: UI(Step 6), vLLM 서버 구동/설정(프로젝트 범위 밖), LLM 응답 품질 평가(소형 모델 성능은 목표가 아님).
 
 ## Step 6. UI (신규 인터페이스)
 - 목표: 간단한 UI에서 학습/예측 수행 (G4).
