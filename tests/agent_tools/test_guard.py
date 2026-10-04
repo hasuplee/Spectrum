@@ -147,3 +147,15 @@ def test_범위_안_질문은_LLM_서버로_전달된다(fake_llm):
     assert len(fake_llm.requests) == 1
     assert "PaiNN으로 학습해줘" in str(fake_llm.requests[0]["messages"])
     assert result.content == "학습을 도와드릴게요"
+
+
+def test_예시_질문은_다양하고_중복이_없으며_세_모델과_실제_분자_ID를_포함한다():
+    # Plan.md Step 6B REVIEW: UI에서 직접 입력하지 않고도 고를 수 있도록 예시를 넓게 제공한다.
+    from agent.guard import ALLOWED_EXAMPLES, REFUSED_EXAMPLES
+
+    assert len(ALLOWED_EXAMPLES) >= 16 and len(REFUSED_EXAMPLES) >= 8
+    assert len(set(ALLOWED_EXAMPLES)) == len(ALLOWED_EXAMPLES) and len(set(REFUSED_EXAMPLES)) == len(REFUSED_EXAMPLES)
+    assert not set(ALLOWED_EXAMPLES) & set(REFUSED_EXAMPLES)
+    joined = " ".join(ALLOWED_EXAMPLES).lower()
+    assert all(model in joined for model in ("painn", "geoformer", "equiformer"))
+    assert "cn1_cn1_nn1" in joined

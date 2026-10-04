@@ -105,6 +105,8 @@ def test_탭은_채팅_학습_예측_순서이고_LLM_상태_배너와_예시_�
     assert tab_labels == ["채팅", "학습", "예측"]
     assert "진짜 LLM" in banner  # 데모 모드는 진짜 LLM이 아님을 상단에 분명히 알린다
     assert list(example_groups.values()) == [list(ALLOWED_EXAMPLES), list(REFUSED_EXAMPLES)]  # 동작하는 예시와 거절 시연 예시 (guard가 단일 출처)
+    datasets = [component["props"] for component in config if component["type"] == "dataset"]
+    assert all(props["samples_per_page"] >= len(props["samples"]) for props in datasets)  # 예시가 여러 쪽으로 나뉘어 숨지 않는다
 
     for status in (_disconnected(), LlmStatus(mode="real", message="LLM 서버: http://internal:8000/v1 (모델 m)", base_url="http://internal:8000/v1", model_id="m")):
         other = _build(status, project_root=tmp_path).get_config_file()["components"]

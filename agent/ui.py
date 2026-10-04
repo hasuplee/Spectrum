@@ -55,8 +55,10 @@ def build_ui(llm_status, project_root=PROJECT_ROOT, results_root=None) -> gr.Blo
                 message = gr.Textbox(label="메시지", placeholder="예: PaiNN으로 학습해줘")
                 send = gr.Button("보내기", variant="primary")
                 agent_state = gr.State()  # 브라우저 세션마다 Agent 하나 (미리보기 상태와 대화 기억이 세션별)
-                gr.Examples(examples=ALLOWED_EXAMPLES, inputs=message, label="이렇게 물어보세요")
-                gr.Examples(examples=REFUSED_EXAMPLES, inputs=message, label="거절 시연 (학습/예측 이외 질문)")
+                gr.Examples(examples=ALLOWED_EXAMPLES, inputs=message, label="이렇게 물어보세요 (누르면 입력창에 채워집니다)",
+                            examples_per_page=len(ALLOWED_EXAMPLES))  # 한 쪽에 모두 보여 준다
+                gr.Examples(examples=REFUSED_EXAMPLES, inputs=message, label="거절 시연 (학습/예측 이외 질문)",
+                            examples_per_page=len(REFUSED_EXAMPLES))
                 message.submit(on_chat, [message, chatbot, agent_state], [chatbot, agent_state, message], api_name="chat")
                 send.click(on_chat, [message, chatbot, agent_state], [chatbot, agent_state, message], api_name=False)
 

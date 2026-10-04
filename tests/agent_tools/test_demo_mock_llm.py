@@ -306,3 +306,13 @@ def test_tool_오류_응답의_message를_사용자에게_전달한다(result):
 
     assert _calls(payload) == []
     assert result["message"] in _text(payload) and _text(payload).startswith(DEMO_PREFIX)
+
+
+def test_UI의_모든_예시_질문을_데모_서버가_알아듣는다():
+    # Plan.md Step 6B REVIEW: 데모 모드에서 예시를 눌렀는데 "이해하지 못했어요"가 나오면 안 된다 (첫 턴 기준).
+    from agent.demo.mock_llm import respond
+    from agent.guard import ALLOWED_EXAMPLES
+
+    for text in ALLOWED_EXAMPLES:
+        message = respond([{"role": "user", "content": text}])["choices"][0]["message"]
+        assert message.get("tool_calls") or "이해하지 못했어요" not in (message.get("content") or ""), text
