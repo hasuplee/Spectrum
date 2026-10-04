@@ -19,6 +19,7 @@ DEMO_MODEL_ID = "demo-rule-based"
 PREFIX = "[데모] "
 _MODELS = ("PaiNN", "Geoformer", "Equiformer")
 _MODEL_QUESTION = "PaiNN, Geoformer, Equiformer 중 무엇으로 학습할까요?"
+_DEFAULTS_MODEL_QUESTION = "PaiNN, Geoformer, Equiformer 중 어떤 모델의 기본값을 보여 드릴까요?"
 _MOLECULE_ID = re.compile(r"[a-z]+\d*_[a-z]+\d*_nn\d+")
 _YES_WORDS = {"응", "네", "예", "좋아", "좋아요", "그래", "진행해줘", "시작해줘", "오케이", "ok", "yes", "y"}
 _NO_WORDS = {"아니", "아니요", "취소", "취소해줘", "그만", "그만해줘", "멈춰", "멈춰줘", "no", "n"}
@@ -159,7 +160,7 @@ def _start(user_text, prior, call_id) -> dict:
     if _is_defaults_query(lowered):
         if model:
             return _call("show_training_defaults", {"base_model": model}, call_id)
-        return _text(_MODEL_QUESTION.replace("학습할까요", "기본값을 보여 드릴까요"))
+        return _text(_DEFAULTS_MODEL_QUESTION)
     if "학습" in lowered or "train" in lowered or "훈련" in lowered:
         if model:
             return _call("show_training_defaults", {"base_model": model}, call_id)
