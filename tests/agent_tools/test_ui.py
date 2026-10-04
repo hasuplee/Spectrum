@@ -180,8 +180,8 @@ def test_학습_미리보기와_시작과_상태가_화면_이벤트로_동작�
 # --- 예측 탭 -------------------------------------------------------------------------------
 
 
-def test_분자_검색은_선택_목록을_갱신한다(launch_ui, tmp_path):
-    client = launch_ui(_disconnected(), project_root=tmp_path)
+def test_분자_검색은_선택_목록을_갱신한다(launch_ui):
+    client = launch_ui(_disconnected(), project_root=PROJECT_ROOT)  # 분자 목록은 저장소의 IrDB 데이터셋에서 읽는다
 
     update = client.predict("NN1", api_name="/molecules")
 
