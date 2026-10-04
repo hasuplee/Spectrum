@@ -84,16 +84,61 @@ Step 0은 환경 세팅, Step 1~7은 `.claude/TDD/SKILL.md`의 RED → GREEN →
       디렉터리에 의존하므로 Step 3/4의 tool은 저장소 루트를 명시적으로 넘겨야 한다.
   - Step 2로 넘기는 사항: registry는 경로만 제공하며 ckpt 로드/모델 재구성은 `common/inference`(Step 2)가 담당.
 
-## Step 2. `common/inference` 확장 (신규 인터페이스)
+## Step 2. 곡선 복원 + `common/inference` 확장 (신규 인터페이스) — 2A~2D로 분할
 - 목표: ckpt → 모델 재구성 → 정규화 복원 → spectrum 곡선 반환 (G2).
+- 분할: 각 하위 Step(2A~2D)마다 RED/GREEN/REVIEW 세 번 커밋하며, 제목은 `Step 2A RED: ...` 형식을 따른다.
+  2A 곡선 복원 → 2B PaiNN → 2C Equiformer → 2D Geoformer 순서. 2B 이후의 세부 계획은 각 하위 Step의 RED에서 확정한다.
+- 조사로 확인된 사실 (2B~2D 설계 근거)
+  - PaiNN/Equiformer ckpt: `{'model', 'optimizer', 'args'}` (`args`는 pickle된 Namespace: targets, radius, num_basis,
+    embed_dim, num_layers, data_path, split_index_npz, spectrum_type, lineshape, beta, n_mode 등).
+  - PaiNN ckpt에는 task_mean/std가 없다 → 학습 split(`common.data.load_dataset_splits`)으로 재계산해야 한다.
+    Equiformer는 `args.task_mean/task_std`가 ckpt `args`에 들어 있다.
+  - Geoformer ckpt는 Lightning 형식(`state_dict`의 키가 `model.` 접두사, `hyper_parameters`에 mean/std 포함)이고,
+    모델 내부에 `mean`/`std` 버퍼가 있어 출력이 **이미 역정규화**되어 나온다. 따라서 Geoformer 예측에는 기존
+    `common.inference.predict()`에 실제 mean/std를 넣으면 이중 역정규화가 된다 → norm_factor는 `[0, 1]`을 사용한다.
+  - 곡선 복원 로직은 현재 `spectrum/write.py`의 `save_spectrum`에 CSV 저장과 함께 섞여 있다.
+- 결정(사용자 확인 완료): 곡선 복원은 **`spectrum/` 안에** 순수 함수로 추가하고 `save_spectrum`이 그것을 호출하도록
+  `spectrum/` 내부에서 재구성한다(제약 1: spectrum/ 내부 재구성은 자유). `common/`·`agent/`는 import만 한다.
+
+### Step 2A. 곡선 복원 함수 (`spectrum/` 내부 재구성 + 신규 함수)
+- 목표: 예측 파라미터 → 곡선(400~800nm, 0.5nm 간격, 800점)을 CSV 저장 없이 반환하는 함수를 `spectrum/` 안에 둔다.
+  `save_spectrum`의 CSV 출력은 수치/형식이 이전과 완전히 동일해야 한다 (제약 2, 3).
 - 범위
-  - `load_checkpoint(path, base_model)`: PaiNN/Equiformer는 ckpt의 `args`로 모델 재구성, Geoformer는
-    LNNP state_dict 키 접두사 처리. task_mean/std는 ckpt에 없으므로 학습 split으로 재계산.
-  - 곡선 복원 함수: 파라미터 벡터 → `spectrum.physics.spectrum_fc/gmm` 호출(import만, 코드 복사 금지)로
-    곡선 반환. `spectrum/write.py`(CSV 기록용)의 로직을 복사하지 않는다.
-- 순서: PaiNN → Equiformer → Geoformer (사이클을 모델별로 나눌 수 있음).
-- 테스트: tiny 모델 저장→로드→`predict()` 결과가 원본 모델과 수치 동일, 곡선 shape/유한성.
-  기존 forward/golden oracle 재사용(Equiformer는 느리므로 최소 케이스만).
+  - 포함
+    - `spectrum/reconstruct.py` 신규: `wavelength_grid_nm()`(400~800nm, 0.5 간격 torch/numpy 격자 — save_spectrum과 동일 값),
+      `reconstruct_spectrum(preds, spectrum_type='FC', kernel_kind='gaussian', beta=2.0) -> torch.Tensor (B, 800)`.
+      `spectrum_type`별 처리(Naive min-max, GMM 8열, FC `n_S=(열수-2)//2`)와 미지원 타입 예외 메시지
+      (`"Undefined spectrum type"`)는 `save_spectrum`의 기존 동작 그대로.
+    - `spectrum/write.py`의 `save_spectrum`이 `reconstruct_spectrum`을 호출하도록 재구성 (CSV 컬럼/포맷 불변).
+  - 미포함: `common/`·`agent/` 연동(2B 이후), `spectrum/physics/` 수정, 포맷/수치 변경.
+- 테스트 계획 (`tests/refactor/test_spectrum_reconstruct.py`)
+  - 특성화(현재 코드에서 이미 통과해야 하는 오라클, 골든 파일 사용 — `tests/support/golden.py`의 2회 실행 규칙):
+    1. `test_save_spectrum_FC_CSV가_리팩토링_전과_동일하다`
+    2. `test_save_spectrum_GMM_CSV가_리팩토링_전과_동일하다`
+    3. `test_save_spectrum_Naive_CSV가_리팩토링_전과_동일하다`
+    4. `test_save_spectrum_미지원_타입은_Undefined_spectrum_type_예외를_낸다`
+  - 신규(실패해야 함 — `spectrum.reconstruct` 부재):
+    5. `test_FC_곡선복원은_save_spectrum_CSV값과_일치한다`
+    6. `test_GMM_곡선복원은_save_spectrum_CSV값과_일치한다`
+    7. `test_Naive_곡선복원은_save_spectrum_CSV값과_일치한다`
+    8. `test_FC_n_mode가_2일때도_곡선을_복원한다` (열 수 6)
+    9. `test_파장_격자는_400에서_800nm까지_0점5nm_간격_800점이다`
+    10. `test_미지원_spectrum_type은_예외를_낸다`
+- RED 검증 기준: 특성화 4개는 (골든 생성 후 재실행 시) 통과, 신규 6개(5~10)는 `ModuleNotFoundError: spectrum.reconstruct`로 실패.
+- 완료 조건: 위 테스트 전체 통과 + 기존 테스트 회귀 통과, `git diff`에서 `save_spectrum`의 출력 로직이 순수 이동으로 보임,
+  `spectrum/` 변경에 외부 폴더 변경이 섞이지 않음.
+
+### Step 2B. PaiNN: 체크포인트 로드 + 예측 + 곡선 (세부 계획은 2B RED에서 확정)
+- 범위(예정): `common/inference.py`에 `load_checkpoint(path, base_model)`(PaiNN: ckpt `args`로 `painn_adapter.build`,
+  state_dict 로드, `eval()`), task_mean/std 재계산, 배치 → 파라미터 → `reconstruct_spectrum` 곡선 반환.
+- 테스트(예정): tiny PaiNN 저장→로드→`predict()` 수치 일치, 정규화 복원, 곡선 shape/유한성.
+
+### Step 2C. Equiformer (세부 계획은 2C RED에서 확정)
+- 범위(예정): ckpt `args.task_mean/std` 사용, `equiformer_adapter.build`로 재구성. Equiformer 테스트는 느리므로(약 8초/건) 최소 케이스.
+
+### Step 2D. Geoformer (세부 계획은 2D RED에서 확정)
+- 범위(예정): Lightning ckpt의 `state_dict`에서 `model.` 접두사 제거, `hyper_parameters`로 모델 재구성,
+  norm_factor는 `[0, 1]`(모델 내부 역정규화).
 
 ## Step 3. 예측 tool (신규 인터페이스)
 - 목표: IrDB 분자(ID 또는 인덱스) → 예측 spectrum (G2).
