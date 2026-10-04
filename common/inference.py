@@ -9,8 +9,8 @@ PyTorch Lightning.
 predict() returns the (unnormalized) FC/GMM parameter vector. load_checkpoint()
 and predict_curves() (Plan.md Step 2B) restore a trained checkpoint and turn
 that vector into a spectrum curve via spectrum.reconstruct (imported, not
-copied). Only PaiNN checkpoints can be loaded so far (Steps 2C/2D add the
-other two backbones).
+copied). PaiNN and Equiformer checkpoints can be loaded so far (Step 2D adds
+Geoformer).
 """
 
 from dataclasses import dataclass
@@ -18,7 +18,7 @@ from pathlib import Path
 
 import torch
 
-from common.adapters import geoformer_adapter, painn_adapter
+from common.adapters import equiformer_adapter, geoformer_adapter, painn_adapter
 from common.adapters._shared import engine_style_forward
 from common.data import load_dataset_splits
 from spectrum.reconstruct import reconstruct_spectrum
@@ -41,7 +41,7 @@ def predict(model, batch, norm_factor, base_model: str) -> torch.Tensor:
         return pred * task_std + task_mean
 
 
-_CHECKPOINT_BUILDERS = {"PaiNN": painn_adapter.build}
+_CHECKPOINT_BUILDERS = {"PaiNN": painn_adapter.build, "Equiformer": equiformer_adapter.build}
 
 
 @dataclass
@@ -53,15 +53,16 @@ class LoadedCheckpoint:
 
 
 def load_checkpoint(path, base_model: str, norm_factor=None) -> LoadedCheckpoint:
-    """Rebuilds a model from a checkpoint saved by train_PaiNN.py (currently PaiNN only).
+    """Rebuilds a model from a checkpoint saved by train_PaiNN.py / train_Equiformer.py.
 
     The checkpoint stores a pickled argparse.Namespace, so it is loaded with
     weights_only=False. That can execute arbitrary code: only load checkpoints
     this repository trained itself.
 
-    norm_factor: [task_mean, task_std]. If omitted, it is [0, 1] when the
-    training args had standardize=False, otherwise recomputed from the training
-    split (the checkpoint does not store it).
+    norm_factor: [task_mean, task_std]. If omitted, the task_mean/task_std stored
+    in the checkpoint's args are used when present (Equiformer); otherwise it is
+    [0, 1] when the training args had standardize=False, or recomputed from the
+    training split (PaiNN checkpoints do not store it).
     """
     if base_model not in _CHECKPOINT_BUILDERS:
         raise ValueError(
@@ -83,6 +84,11 @@ def load_checkpoint(path, base_model: str, norm_factor=None) -> LoadedCheckpoint
 
 
 def _restore_norm_factor(args) -> list:
+    stored_mean = getattr(args, "task_mean", None)
+    stored_std = getattr(args, "task_std", None)
+    if stored_mean is not None and stored_std is not None:
+        return [torch.as_tensor(stored_mean, dtype=torch.float32).detach().cpu(),
+                torch.as_tensor(stored_std, dtype=torch.float32).detach().cpu()]
     if not args.standardize:
         num_targets = len(args.targets)
         return [torch.zeros(num_targets), torch.ones(num_targets)]
