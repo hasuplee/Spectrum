@@ -1,0 +1,11 @@
+# Phase 2 (Spectrum Agent) 추가 의존성. venv_spectrum_cpu 하나에 설치한다 (Plan.md Step 0).
+# 설치 전 환경은 requirements-dev-before-agent.txt 참고 (롤백용).
+agno==3.1.1
+openai==3.24.0
+gradio==6.29.1
+# agno 설치 시 pydantic 1.10.26 -> 2.x 로 올라간다 (agno 요구사항).
+pydantic==2.13.5
+# gradio가 huggingface-hub 2.x 를 끌어오면 transformers 4.56(<1.0 요구)과 충돌한다.
+# transformers/geoformer 쪽을 보존하기 위해 0.36.2로 고정한다.
+# (gradio는 >=1.16을 요구하여 `pip check`가 경고하지만, UI 구성/서버 응답은 확인함.)
+huggingface-hub==0.36.2
