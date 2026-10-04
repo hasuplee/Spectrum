@@ -305,11 +305,73 @@ Step 0은 환경 세팅, Step 1~7은 `.claude/TDD/SKILL.md`의 RED → GREEN →
       `GeoformerDataCollator` dict) — 분자 ID → 배치 변환은 모델별로 Step 3에서 구현한다.
 - **Step 2 전체 완료**: 2A(곡선 복원) → 2B(PaiNN) → 2C(Equiformer) → 2D(Geoformer). 전체 82개 테스트 통과.
 
-## Step 3. 예측 tool (신규 인터페이스)
-- 목표: IrDB 분자(ID 또는 인덱스) → 예측 spectrum (G2).
-- 범위: `agent/tools/predict_tool.py` — `predict_spectrum(molecule_id, base_model=None, ...)`.
-  ckpt가 없으면 `{"status": "needs_training", ...}` 구조화 응답. 존재하지 않는 ID는 오류 응답.
-- 테스트: ckpt 없음 → needs_training, 잘못된 ID, tiny ckpt fixture로 정상 예측.
+## Step 3. 예측 tool (신규 인터페이스) — 3A~3B로 분할
+- 목표: IrDB 분자 ID → 학습된 체크포인트로 예측한 스펙트럼 곡선을 **구조화된 dict**로 반환 (G2). 체크포인트가 없으면 "학습 필요" 응답.
+- 분할(사용자 확정): 각 하위 Step마다 RED/GREEN/REVIEW 세 번 커밋(제목 `Step 3A RED: ...`). **IrDB에 대해 확실하게 동작하는 것을 목표**로 하며,
+  다른 데이터셋(`IrDB_uff`/`IrDB_murcko`/`PtDB`)은 로컬에 `processed`가 없어 이번 범위에서 검증하지 않는다.
+  3A 모델별 입력 배치 구성 → 3B 예측 tool(+분자 목록 tool).
+- 조사 근거
+  - IrDB는 분자 1024개, 분자 ID는 `Data.name`(예: `cn1_cn1_nn1`)이며 중복 없음, 데이터셋 로드 0.03초 → 조회 비용 부담 없음.
+  - 모델별 입력 배치: PaiNN/Equiformer는 PyG `Batch`. Geoformer는 `GeoformerDataCollator`가 만드는 dict이며, 실제 학습 파이프라인(`geoformer/data.py`)은
+    PyG `Data` 객체 목록을 이 콜레이터에 **그대로** 넘긴다(콜레이터가 `z, pos, y, spec_x, spec_y, name`을 읽음 — IrDB `Data`에 모두 있음).
+  - `load_checkpoint`(2B~2D)의 mean/std 재계산과 데이터셋 접근은 **작업 디렉터리가 저장소 루트**여야 한다(2B 기록). Equiformer 로드 약 7초 → 캐시 필요(2C 기록).
+  - 곡선 800점은 LLM 컨텍스트에 넣기에 크다 → Step 3의 함수는 전체 곡선을 반환하고(UI·테스트용), Step 5에서 Agent용으로 요약만 돌려주는 얇은 래퍼를 둔다.
+
+### Step 3A. 모델별 입력 배치 구성 (`common/inference.py` 확장)
+- 목표: 데이터셋의 `Data` 목록을 각 백본이 기대하는 배치로 만든다(예측 tool이 모델 종류를 몰라도 되게).
+- 범위
+  - 포함: `build_batch(base_model, data_list)` — PaiNN/Equiformer는 `torch_geometric.data.Batch.from_data_list(data_list)`, Geoformer는
+    `GeoformerDataCollator(max_nodes=None)(data_list)`(학습 파이프라인과 동일한 호출). 미지원 모델은 `ValueError`(지원 목록 포함).
+  - 미포함: 데이터셋 조회·분자 ID 처리(3B), 체크포인트 로드/예측(2B~2D에서 완료), `predict()`·`geoformer/` 수정.
+- 테스트 계획 (`tests/refactor/test_inference_build_batch.py`; 새 함수 import는 각 테스트 안에서 하여 개별 실패로 확인)
+  1. `test_PaiNN과_Equiformer_배치는_PyG_Batch로_묶인다` (`make_tiny_pyg_batch().to_data_list()` → 원본 배치와 `pos`/`z`/`batch` 일치; parametrize로 두 모델 모두)
+  2. `test_Geoformer_배치는_z와_pos를_가진_dict이다` (원본 `make_tiny_geoformer_batch`와 `z`/`pos` 일치)
+  3. `test_실제_IrDB_분자로_세_모델의_배치를_만들_수_있다` (실제 `IrDB` 분자 2개: PyG 배치의 그래프 수 2·노드 수 합, Geoformer 배치의 `z` 행 수 2와 `pos` 마지막 축 3)
+  4. `test_지원하지_않는_모델이면_ValueError가_발생한다`
+  (pytest 케이스 수: 1번이 parametrize로 2개 → 총 5개)
+- RED 검증 기준: 5개 모두 `ImportError: cannot import name 'build_batch'`로 실패. 기존 82개는 영향 없이 통과.
+- 완료 조건(REVIEW 종료 시): 신규 5개 + 기존 82개 통과, Step 2에서 쓴 실제 체크포인트 3종과 `build_batch`로 만든 IrDB 배치로 예측해 학습 스크립트 결과와
+  일치(PaiNN/Equiformer는 PyG `DataLoader` 배치와, Geoformer는 콜레이터 배치와 같은 결과).
+
+### Step 3B. 예측 tool + 분자 목록 tool (`agent/tools/predict_tool.py`)
+- 목표: IrDB 분자 ID → 예측 곡선 dict, 분자 ID 조회 (G2).
+- 범위
+  - 포함 (`agent/tools/predict_tool.py`)
+    - `predict_spectrum(molecule_id, base_model=None, *, results_root=저장소루트, project_root=저장소루트) -> dict`
+      - 체크포인트 선택: `base_model` 지정 시 해당 모델 중 최신, 미지정 시 전 모델 중 최신(`registry.get_latest_checkpoint`; Geoformer의 `last` vs best 정책은
+        "수정 시각 최신"으로 확정).
+      - 응답(JSON 직렬화 가능한 dict, 예외 대신 상태값으로 반환 — LLM tool 결과로 쓰기 위함)
+        - `{"status": "ok", "molecule_id", "base_model", "checkpoint", "spectrum_type", "wavelength_nm": [800], "intensity": [800], "peak_wavelength_nm"}`
+        - `{"status": "needs_training", "requested_base_model": 모델 또는 None, "message"}` (해당 조건의 체크포인트가 없음)
+        - `{"status": "error", "error": "unsupported_base_model", "supported": [...], "message"}`
+        - `{"status": "error", "error": "unknown_molecule", "molecule_id", "message"}`
+      - 로드한 `LoadedCheckpoint`는 `(경로, 수정 시각)` 키로 캐시해 같은 체크포인트로 재예측 시 다시 로드하지 않는다.
+      - 호출 동안 작업 디렉터리를 `project_root`로 바꾸고(`contextlib.chdir`) 끝나면 복원한다 — 호출자의 cwd와 무관하게 동작.
+      - 데이터셋은 ckpt `args.data_path`를 따른다(이번 범위에서 검증하는 것은 `IrDB`). 분자 배치는 3A의 `build_batch`로 만들고, 곡선은 `common.inference.predict_curves`로 계산.
+    - `list_molecules(query="", limit=20, *, project_root=저장소루트) -> dict` — 사용자가 유효한 분자 ID를 고를 수 있게 하는 조회 tool:
+      `{"status": "ok", "total_matches", "molecule_ids": [...]}` (대소문자 무시 부분일치), `limit`이 1~100을 벗어나면 `{"status": "error", ...}`.
+  - 미포함: AGNO 등록과 Agent용 요약 래퍼(Step 5), 학습 tool(Step 4), UI 곡선 plot과 실험 스펙트럼 비교(Step 6; 데이터에 `spec_x/spec_y`가 있어 가능),
+    SMILES/SDF 입력(PRD 비목표), `common/data.py` 수정(데이터셋 클래스 선택은 6줄이라 tool 안에서 같은 규칙으로 처리 — 중복은 REVIEW에서 정리 후보로만 기록),
+    Equiformer 실제 예측 테스트(로드는 2C에서 검증, 느림), 스레드 안전성(`chdir`는 전역 상태이므로 동시 호출은 지원하지 않음 — 문서화).
+- 테스트 계획 (`tests/agent_tools/test_predict_tool.py`; tiny PaiNN/Geoformer 체크포인트를 `tmp_path/results_*`에 저장해 사용. PaiNN은 ckpt `args`를
+  `standardize=True`와 실제 split으로 저장해 평균/표준편차를 재계산하게 하고, Geoformer는 모델 `mean/std` 버퍼에 물리적인 값을 주어 곡선이 유한하도록 한다)
+  1. `test_학습된_모델이_없으면_needs_training을_반환한다`
+  2. `test_모델을_지정했는데_해당_모델만_없으면_needs_training을_반환한다`
+  3. `test_지원하지_않는_모델을_지정하면_error를_반환한다`
+  4. `test_PaiNN_체크포인트로_IrDB_분자의_스펙트럼을_예측한다` (status ok, 곡선 800점, 파장 400~799.5, 유한값, 최댓값 1, 피크 파장이 격자 위의 값, JSON 직렬화 가능)
+  5. `test_예측_곡선은_직접_계산한_값과_일치한다` (`common.inference`와 데이터셋에서 직접 만든 배치로 계산한 곡선과 일치 — 분자가 맞게 선택되는지 검증)
+  6. `test_Geoformer_체크포인트로도_예측한다`
+  7. `test_모델을_지정하지_않으면_가장_최근_체크포인트의_모델을_쓴다` (`os.utime`으로 수정 시각을 달리한 두 경우)
+  8. `test_존재하지_않는_분자_ID는_error를_반환한다`
+  9. `test_같은_체크포인트로_다시_예측하면_모델을_다시_로드하지_않는다` (`load_checkpoint` 호출 횟수 계측)
+  10. `test_작업_디렉터리가_달라도_예측하고_원래_디렉터리로_복원한다`
+  11. `test_분자_ID_목록을_limit만큼_반환한다`
+  12. `test_query로_분자_ID를_대소문자_무시하고_부분일치_검색한다`
+  13. `test_limit이_범위를_벗어나면_error를_반환한다`
+- RED 검증 기준: 13개 모두 `ModuleNotFoundError: agent.tools.predict_tool`로 실패.
+- 완료 조건(REVIEW 종료 시): 신규 13개 + 기존 테스트 통과, Step 0/2에서 만든 **실제 체크포인트 3종**(PaiNN/Equiformer/Geoformer)으로 `predict_spectrum`을 호출해
+  학습 스크립트가 만든 같은 분자의 곡선(`p_spec.csv`)과 비교, `agent/`가 곡선 복원 로직을 직접 갖지 않고 `common.inference`를 통해 사용
+  (파장 격자만 `spectrum.reconstruct.wavelength_grid_nm` import 허용), 기존 학습 코드 변경 없음.
 
 ## Step 4. 학습 tool (신규 인터페이스)
 - 목표: 파라미터 검증/기본값 조회/백그라운드 학습/상태 조회 (G1).
