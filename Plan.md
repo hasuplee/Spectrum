@@ -661,19 +661,55 @@ Step 0은 환경 세팅, Step 1~7은 `.claude/TDD/SKILL.md`의 RED → GREEN →
     - 5C에서 가드의 후속 질문 보강(위 개선안 a/b)과 `ERROR` 로그 처리를 결정한다.
 
 ### Step 5B. Agent용 tool 래퍼 (`agent/assistant_tools.py`)
-- 목표: Step 1~4의 tool을 LLM이 쓰기 좋은 형태(간결한 인자·요약된 결과·확인 절차 강제)로 감싼다 (G1~G3).
-- 범위(예정, 세부는 5B RED에서 확정)
-  - `build_assistant_tools(project_root=저장소루트) -> list[callable]`: 호출마다 독립적인 상태(마지막 학습 미리보기)를 가진 클로저 목록. AGNO는 함수의 시그니처·docstring으로 tool 스키마를 만든다.
-    - `list_trained_models()` — registry 기반으로 모델별 학습 여부.
-    - `show_training_defaults(base_model)` — `get_training_defaults`.
-    - `preview_training(base_model, settings=None)` — `start_training(confirmed=False)`로 최종 설정을 보여 주고 이 미리보기를 기억.
-    - `start_training_confirmed(base_model, settings=None, overwrite=False)` — **직전 미리보기와 같은 설정일 때만** 실행(`start_training(confirmed=True)`), 아니면 `{"status": "error", "error": "not_previewed"}`.
-      (LLM이 설정을 보여 주는 단계를 건너뛰지 못하게 하는 tool 수준의 안전장치. 사용자의 "응"은 instructions가 책임.)
-    - `check_training_status(job_id=None)` — 상태, 경과 시간, 로그 마지막 5줄만, 체크포인트 유무.
-    - `list_molecule_ids(query="", limit=10)`.
-    - `predict_molecule_spectrum(molecule_id, base_model=None)` — 요약만: 모델, 피크 파장, 400~790nm를 50nm 간격으로 샘플링한 상대 강도, 체크포인트 이름. `needs_training`은 "먼저 학습" 안내를 그대로 전달.
-  - 미포함: Agent 조립(5C), UI용 전체 곡선(UI는 `predict_spectrum`을 직접 호출).
-- 테스트(예정): 각 래퍼의 반환 요약 크기(작음)와 내용, 미리보기 없이 확인 실행 시 `not_previewed`, 미리보기와 다른 설정 실행 거부, 가짜 학습 명령(4B 방식)으로 start→status→예측 연결, 예측 요약이 전체 곡선과 일치.
+- 목표: Step 1~4의 tool을 LLM이 쓰기 좋은 형태(간결한 인자, 요약된 결과, 확인 절차 강제)로 감싼다 (G1~G3).
+- 조사 근거 (agno 3.1.1, 로컬 실험)
+  - AGNO는 함수의 시그니처·docstring(Args 항목이 파라미터 설명)으로 tool 스키마를 만들고, 가짜 OpenAI 서버를 거친 tool 호출에서 `dict`, `bool`, `Optional`, `int` 인자가 그대로 전달된다
+    (생략된 선택 인자는 기본값).
+  - `Dict[str, Any]`는 값 스키마가 `{"type": "object"}`로 변환되어 값이 정수여야 하는 `settings`에서 실제 LLM을 혼동시킬 수 있다. `Dict[str, Union[int, str]]`는
+    `anyOf [integer, string]`으로 올바르게 변환된다 → `settings`는 `Optional[Dict[str, Union[int, str]]]`로 선언한다.
+  - 한 번의 `predict_spectrum` 결과(곡선 800점 ×2, 약 20KB)는 LLM 컨텍스트에 부적합하고, 학습 결과의 `command`(인터프리터 절대 경로 포함)·`log_path`도 LLM에 불필요하다 → 래퍼가 요약한다.
+  - 훈련과 예측의 경로가 한 곳이어야 한다: 학습은 `project_root`(cwd와 `results_*`)에, 예측은 `results_root`에서 체크포인트를 찾고 `project_root`에서 데이터셋(`IrDB`)을 연다.
+    실제 사용에서는 둘 다 저장소 루트이고, 테스트에서만 다르게 줄 수 있다(가짜 학습은 임시 `project_root`, 예측은 임시 `results_root` + 실제 데이터셋).
+- 범위
+  - 포함: `build_assistant_tools(project_root=저장소루트, results_root=None) -> list[callable]` (`results_root` 기본값은 `project_root`). 호출마다 **독립적인 상태**(마지막 학습 미리보기)를 가진
+    클로저 7개를 돌려준다. 결과는 모두 `status`가 있는 JSON 직렬화 가능한 dict.
+    1. `list_trained_models()` → `{"status": "ok", "models": {모델: {"trained": bool, "checkpoint": 파일 이름 또는 None}}, "any_trained": bool}` (registry 기반).
+    2. `show_training_defaults(base_model)` → `get_training_defaults` 결과 + `changeable_parameters`(사용자가 바꿀 수 있는 파라미터 이름 목록: 공통 6개 + 그 모델의 모델 크기 파라미터). 미지원 모델은 error.
+    3. `preview_training(base_model, settings=None)` → `start_training(confirmed=False)` 결과(`needs_confirmation` + 최종 설정 + `will_overwrite`) 또는 검증 오류/`busy`. `needs_confirmation`이면 이 미리보기를 기억한다.
+    4. `start_training_confirmed(base_model, settings=None, overwrite=False)` → **기억한 미리보기와 같은 모델·같은 최종 설정**일 때만 `start_training(confirmed=True)`를 실행하고, 아니면
+       `{"status": "error", "error": "not_previewed", "message"}`. 시작에 성공하면(`started`) 미리보기를 소모한다(재시작에는 새 미리보기 필요). `already_trained`/`busy`면 미리보기를 유지한다
+       (사용자가 덮어쓰기를 확인한 뒤 `overwrite=True`로 다시 호출할 수 있게). 결과는 `{"status": "started", "job_id", "base_model", "output_dir", "settings", "message"}`로 요약(`command`·`log_path` 제외).
+       ※ 이 장치는 "LLM이 설정을 사용자에게 보여 주는 단계를 건너뛰는 것"을 막을 뿐이며, 사용자가 "응"이라고 답했는지는 검증하지 않는다(instructions의 몫).
+    5. `check_training_status(job_id=None)` → `{"status": "ok", "job_id", "base_model", "state", "return_code", "elapsed_seconds"(정수), "log_tail"(마지막 5줄, 줄당 200자), "has_checkpoint"}`.
+       `no_job`/`unknown_job`은 그대로 전달.
+    6. `list_molecule_ids(query="", limit=10)` → `list_molecules` 결과(그대로).
+    7. `predict_molecule_spectrum(molecule_id, base_model=None)` → 성공 시 **요약만**:
+       `{"status": "ok", "molecule_id", "base_model", "checkpoint"(파일 이름), "spectrum_type", "peak_wavelength_nm", "samples": [{"wavelength_nm", "intensity"} ×8]}`
+       (400~750nm를 50nm 간격으로 샘플링한 상대 강도, 소수 셋째 자리). `needs_training`/`error`는 그대로 전달.
+  - 미포함: Agent 조립·instructions·`VLLM` 환경변수(5C), 가드와의 연결(5C), UI용 전체 곡선(UI는 `predict_spectrum`을 직접 호출), 작업 취소 tool.
+- 테스트 계획 (`tests/agent_tools/test_assistant_tools.py`; 학습 명령은 4B 방식으로 `[sys.executable, "-c", ...]`로 대체해 실제 서브프로세스를 쓰고, 예측은 tiny PaiNN 체크포인트와 실제 IrDB를 쓴다.
+  `train_tool._jobs`는 테스트마다 초기화. 새 모듈 import는 각 테스트의 도우미 안에서 하여 개별 실패로 확인)
+  1. `test_도구_목록은_계획한_7개이고_AGNO_스키마로_변환된다` (이름 집합, 모두 docstring 보유, `Function.from_callable`의 파라미터가 시그니처와 일치, `settings`가 `anyOf [integer, string]`)
+  2. `test_학습된_모델_목록은_모델별_체크포인트_유무를_알려준다` (없을 때/PaiNN만 있을 때)
+  3. `test_학습_기본값에는_바꿀_수_있는_파라미터_목록이_포함된다` (PaiNN `embed_dim` 포함, Equiformer는 `embed_dim` 없음·`num_basis` 있음, `lr` 없음, 미지원 모델 error)
+  4. `test_미리보기는_실행하지_않고_최종_설정을_보여_준다` (프로세스 미시작 확인)
+  5. `test_미리보기는_잘못된_설정을_검증_오류로_돌려준다`
+  6. `test_미리보기_없이_확인_실행하면_not_previewed를_반환하고_실행하지_않는다`
+  7. `test_미리보기와_다른_모델이나_설정으로_확인_실행하면_not_previewed를_반환한다`
+  8. `test_미리보기와_같은_최종_설정이면_표현이_달라도_실행된다` (예: 미리보기 `{"train_steps": 5}`, 실행 `{"train_steps": 5, "eval_steps": <기본값>}`)
+  9. `test_미리보기_후_확인_실행하면_요약된_started를_반환하고_미리보기를_소모한다` (`command`/`log_path` 없음, 완료 후 `check_training_status`로 finished, 다시 실행하면 `not_previewed`)
+  10. `test_이미_학습된_모델은_overwrite_확인_후에만_다시_학습한다` (`will_overwrite` → `already_trained` → 같은 미리보기로 `overwrite=True` → started, 이전 산출물 삭제)
+  11. `test_실행_중에_다시_시작하면_busy를_반환하고_미리보기를_유지한다`
+  12. `test_학습_상태는_로그를_5줄_200자로_요약한다` (50줄×500자 출력, 정수 경과 시간, 실패 작업의 `failed`/`return_code`, `no_job`/`unknown_job` 전달)
+  13. `test_분자_ID_목록은_그대로_전달한다`
+  14. `test_예측_결과는_요약만_돌려주고_전체_곡선과_일치한다` (8개 샘플의 파장 400~750, 강도가 `predict_spectrum` 전체 곡선의 같은 파장 값과 일치, JSON 2KB 미만, 전체 곡선 키 없음)
+  15. `test_학습된_모델이_없으면_예측은_needs_training을_전달한다`
+  16. `test_도구_상태는_build_assistant_tools_호출마다_독립적이다` (A에서 미리보기, B에서 확인 실행 → `not_previewed`)
+  17. `test_AGNO_Agent가_가짜_LLM_서버를_통해_미리보기와_확인_실행을_호출할_수_있다` (실제 `Agent` + `VLLM` + 가짜 서버: LLM이 `preview_training`(dict 인자) → `start_training_confirmed` 순서로 tool을
+      호출하고, 요청에 7개 tool이 실리며, 학습 프로세스가 실제로 실행됨)
+- RED 검증 기준: 모두 `agent.assistant_tools` 부재(`ModuleNotFoundError`)로 실패. 기존 178개는 영향 없이 통과.
+- 완료 조건(REVIEW 종료 시): 신규 + 기존 테스트 통과, 실제 tiny 학습 → 상태 조회 → 예측 요약까지 래퍼만으로 연결(저장소 루트에서 실제 PaiNN tiny 학습), 응답 크기 측정(예측 요약 약 1KB 이하),
+  `agent/`가 곡선 계산 로직을 직접 갖지 않음, 리팩토링 필요성 검토.
 
 ### Step 5C. Agent 조립 + 대화 시나리오 (`agent/agent.py`)
 - 목표: 가드·instructions·tool·대화 기억·`VLLM`을 합친 `build_agent()`와 `chat()` (G3).
