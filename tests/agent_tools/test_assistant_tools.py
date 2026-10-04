@@ -9,24 +9,15 @@ agent.assistant_tools가 아직 없으므로 실패해야 한다 (RED).
 
 import inspect
 import json
-import sys
 import time
 
-import pytest
-
 from tests.agent_tools.test_predict_tool import _save_painn_ckpt
+from tests.support.fake_training import use_fake_training
 
 EXPECTED_TOOLS = {
     "list_trained_models", "show_training_defaults", "preview_training", "start_training_confirmed",
     "check_training_status", "list_molecule_ids", "predict_molecule_spectrum",
 }
-
-
-@pytest.fixture(autouse=True)
-def _fresh_jobs(monkeypatch):
-    from agent.tools import train_tool
-
-    monkeypatch.setattr(train_tool, "_jobs", {}, raising=False)
 
 
 def _tools(project_root=None, results_root=None):
@@ -38,13 +29,6 @@ def _tools(project_root=None, results_root=None):
     if results_root is not None:
         kwargs["results_root"] = results_root
     return {tool.__name__: tool for tool in build_assistant_tools(**kwargs)}
-
-
-def _use_fake_training(monkeypatch, code):
-    """학습 명령을 `python -c 코드`로 대체한다 (프로세스 실행/로그/종료 코드는 실제 그대로)."""
-    from agent.tools import train_tool
-
-    monkeypatch.setattr(train_tool, "build_training_command", lambda request: [sys.executable, "-c", code])
 
 
 def _wait_until_done(tools, job_id=None, timeout=60):
@@ -129,7 +113,7 @@ def test_분자_ID_목록은_그대로_전달한다():
 
 def test_미리보기는_실행하지_않고_최종_설정을_보여_준다(tmp_path, monkeypatch):
     marker = tmp_path / "ran.txt"
-    _use_fake_training(monkeypatch, _marker_code(marker))
+    use_fake_training(monkeypatch, _marker_code(marker))
     tools = _tools(tmp_path)
 
     preview = tools["preview_training"]("PaiNN", {"train_steps": 5})
@@ -153,7 +137,7 @@ def test_미리보기는_잘못된_설정을_검증_오류로_돌려준다(tmp_p
 
 def test_미리보기_없이_확인_실행하면_not_previewed를_반환하고_실행하지_않는다(tmp_path, monkeypatch):
     marker = tmp_path / "ran.txt"
-    _use_fake_training(monkeypatch, _marker_code(marker))
+    use_fake_training(monkeypatch, _marker_code(marker))
     tools = _tools(tmp_path)
 
     result = tools["start_training_confirmed"]("PaiNN")
@@ -166,7 +150,7 @@ def test_미리보기_없이_확인_실행하면_not_previewed를_반환하고_�
 
 def test_미리보기와_다른_모델이나_설정으로_확인_실행하면_not_previewed를_반환한다(tmp_path, monkeypatch):
     marker = tmp_path / "ran.txt"
-    _use_fake_training(monkeypatch, _marker_code(marker))
+    use_fake_training(monkeypatch, _marker_code(marker))
     tools = _tools(tmp_path)
     tools["preview_training"]("PaiNN", {"train_steps": 5})
 
@@ -180,7 +164,7 @@ def test_미리보기와_다른_모델이나_설정으로_확인_실행하면_no
 
 
 def test_미리보기와_같은_최종_설정이면_표현이_달라도_실행된다(tmp_path, monkeypatch):
-    _use_fake_training(monkeypatch, "print('학습')")
+    use_fake_training(monkeypatch, "print('학습')")
     tools = _tools(tmp_path)
     default_eval_steps = tools["show_training_defaults"]("PaiNN")["eval_steps"]
     tools["preview_training"]("PaiNN", {"train_steps": 5})
@@ -193,7 +177,7 @@ def test_미리보기와_같은_최종_설정이면_표현이_달라도_실행�
 
 
 def test_미리보기_후_확인_실행하면_요약된_started를_반환하고_미리보기를_소모한다(tmp_path, monkeypatch):
-    _use_fake_training(monkeypatch, "print('학습 로그')")
+    use_fake_training(monkeypatch, "print('학습 로그')")
     tools = _tools(tmp_path)
     tools["preview_training"]("PaiNN", {"train_steps": 5})
 
@@ -212,7 +196,7 @@ def test_미리보기_후_확인_실행하면_요약된_started를_반환하고_
 
 
 def test_이미_학습된_모델은_overwrite_확인_후에만_다시_학습한다(tmp_path, monkeypatch):
-    _use_fake_training(monkeypatch, "import os; print('old_exists=' + str(os.path.exists('results_PaiNN/0/0/old.txt')))")
+    use_fake_training(monkeypatch, "import os; print('old_exists=' + str(os.path.exists('results_PaiNN/0/0/old.txt')))")
     old_output = tmp_path / "results_PaiNN" / "0" / "0"
     old_output.mkdir(parents=True)
     (old_output / "checkpoint_best.ckpt").write_bytes(b"")
@@ -232,7 +216,7 @@ def test_이미_학습된_모델은_overwrite_확인_후에만_다시_학습한�
 
 
 def test_실행_중에_다시_시작하면_busy를_반환하고_미리보기를_유지한다(tmp_path, monkeypatch):
-    _use_fake_training(monkeypatch, "import time; time.sleep(3)")
+    use_fake_training(monkeypatch, "import time; time.sleep(3)")
     first_tools, second_tools = _tools(tmp_path), _tools(tmp_path)
     second_tools["preview_training"]("Geoformer")  # 두 번째 도구 인스턴스가 먼저 미리보기를 해 둔다
 
@@ -252,7 +236,7 @@ def test_실행_중에_다시_시작하면_busy를_반환하고_미리보기를_
 
 def test_도구_상태는_build_assistant_tools_호출마다_독립적이다(tmp_path, monkeypatch):
     marker = tmp_path / "ran.txt"
-    _use_fake_training(monkeypatch, _marker_code(marker))
+    use_fake_training(monkeypatch, _marker_code(marker))
     tools_a, tools_b = _tools(tmp_path), _tools(tmp_path)
 
     tools_a["preview_training"]("PaiNN")
@@ -271,12 +255,12 @@ def test_학습_상태는_로그를_5줄_200자로_요약한다(tmp_path, monkey
     no_job = tools["check_training_status"]()
     unknown = tools["check_training_status"]("없는-작업")
 
-    _use_fake_training(monkeypatch, "for i in range(50): print(str(i) + 'x' * 500)")
+    use_fake_training(monkeypatch, "for i in range(50): print(str(i) + 'x' * 500)")
     tools["preview_training"]("PaiNN")
     long_job = tools["start_training_confirmed"]("PaiNN")
     summary = _wait_until_done(tools, long_job["job_id"])
 
-    _use_fake_training(monkeypatch, "import sys; print('boom: 학습 실패'); sys.exit(3)")
+    use_fake_training(monkeypatch, "import sys; print('boom: 학습 실패'); sys.exit(3)")
     tools["preview_training"]("PaiNN")
     failing_job = tools["start_training_confirmed"]("PaiNN")
     failed = _wait_until_done(tools, failing_job["job_id"])
@@ -331,7 +315,7 @@ def test_AGNO_Agent가_가짜_LLM_서버를_통해_미리보기와_확인_실행
     from agno.models.vllm import VLLM
 
     marker = tmp_path / "ran.txt"
-    _use_fake_training(monkeypatch, _marker_code(marker) + "; print('학습 실행')")
+    use_fake_training(monkeypatch, _marker_code(marker) + "; print('학습 실행')")
     tools = _tools(tmp_path)
     settings = {"train_steps": 5}
     fake_llm.queue_tool_calls(("preview_training", {"base_model": "PaiNN", "settings": settings}))

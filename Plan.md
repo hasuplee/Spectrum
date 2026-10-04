@@ -788,6 +788,33 @@ Step 0은 환경 세팅, Step 1~7은 `.claude/TDD/SKILL.md`의 RED → GREEN →
 - RED 검증 기준: `agent.agent` 부재(`ModuleNotFoundError`)로 실패하는 테스트와, 가드 보강 테스트(새 허용 표현이 현재 거절됨)가 실패. 기존 195개는 영향 없이 통과.
 - 완료 조건(REVIEW 종료 시): 신규 + 기존 테스트 통과, 가드 폭넓은 문장 시험(5A REVIEW의 64문장 + 후속 표현)에서 오판정 재점검, instructions를 한 번 읽고 tool 이름·응답 상태 이름이 실제 코드와 일치하는지 대조.
 
+- **완료 결과 (Step 5C-1 종료)**
+  - RED(`339801e`): `test_agent` 12개가 `agent.agent` 부재로, 가드 후속 표현 11개가 현재 규칙으로 실패. GREEN(`c601d5b`): `agent/agent.py` 신규(`build_model`, `ModelConfigError`, `INSTRUCTIONS`,
+    `build_agent`, `chat`) + `agent/guard.py` 허용 표현 11개 보강. 신규 24 케이스 통과 + 전체 219개 통과.
+  - REVIEW 확인 사항
+    - 스코프: Plan 범위 안(데모 서버·UI·실제 LLM 연결 테스트 없음). 기존 코드 변경은 가드의 키워드 목록뿐. `agent/`에 곡선 계산 로직이나 `spectrum` 참조 없음.
+    - **실제 tool 스택 + 가짜 LLM의 다중 턴 대화**(저장소 루트, 실제 PaiNN tiny 학습, `chat()` 사용, 확인 후 산출물 삭제): 1턴 "PaiNN으로 학습해줘"(LLM이 `show_training_defaults` → `preview_training` 호출 후 확인 질문) →
+      2턴 "응"(요청에 이전 턴의 `assistant(tool_calls)`/`tool` 결과/`assistant`가 모두 포함, `start_training_confirmed`로 학습 시작) → 3턴 "끝났어?"(5C-1에서 허용한 후속 표현, `check_training_status`) →
+      4턴 "cn1_cn1_nn1 스펙트럼 예측해줘"(`predict_molecule_spectrum`, 결과 521B). 모든 응답이 `chat()`을 거쳐 문자열로 반환됨.
+    - instructions ↔ 코드 대조: instructions에 나온 snake_case 식별자 11개(tool 6개 + `will_overwrite`, `train_steps`, `needs_training`, `not_previewed`, `already_trained`)가 **모두 실제 tool 이름이거나 응답 키**이고,
+      언급한 상태 값(`running/finished/failed`, `busy`, `samples`, `device`, `overwrite`)도 코드에 실재. 규칙 9개, 1,290자(2,478B).
+    - 크기/지연: 4턴 누적 후 마지막 LLM 요청이 10.6KB(system instructions 약 2.5KB + tool 스키마 약 3.7KB + 메시지 18개). 기본 `build_model`(`max_retries=1`)로 연결 불가 서버에서 `chat()`이 4.5초 만에
+      "LLM 서버 호출에 실패했습니다 … VLLM_BASE_URL, VLLM_MODEL, VLLM_API_KEY 설정과 서버 상태를 확인해 주세요"를 반환(SDK 기본 설정은 7.5초).
+    - 가드 재시험(5A REVIEW의 64문장): 기대와 다른 판정 3건 → 2건(남은 것은 알려진 한계 "Geoformer 논문 요약해줘", "FC 모델 설명해줘"). 새로 추가한 후속 표현("기본으로 해줘", "얼마나 걸려?", "끝났어?",
+      "결과 보여줘", "그래프 보여줘", "왜 실패했어?", "뭘 할 수 있어?", "사용법 알려줘" 등)은 통과하고 "결과가 뭐야?" 같은 정의형 질문은 계속 거절.
+    - 리팩토링(테스트 코드, 동작 불변): 세 테스트 파일(`test_train_job`, `test_assistant_tools`, `test_agent`)에 똑같이 복사되어 있던 `_fresh_jobs` fixture와 `_use_fake_training` 도우미를 공용으로 추출 —
+      `tests/agent_tools/conftest.py`(자동 fixture), `tests/support/fake_training.py`(`use_fake_training`). 세 번 반복되었고 Step 6 UI 테스트에서도 필요해질 것이라 판단. 이후 미사용 import 정리,
+      테스트 수 219개 그대로 통과, 줄 수 71줄 삭제/31줄 추가. 프로덕션 코드(`agent/`)는 리팩토링할 것이 없다고 판단해 변경하지 않음(`agent.py`는 함수 4개와 상수 1개로 책임이 분명).
+  - 관찰한 개선 후보 (동작/문구 변경이라 리팩토링이 아니므로 변경하지 않고 기록)
+    1. instructions에 `list_trained_models`가 언급되지 않았다(LLM은 tool 스키마 설명으로 알 수 있음). 필요하면 "예측 전에 학습된 모델이 있는지 확인할 때 사용" 한 줄을 추가.
+    2. 여전히 거절되는 대화 표현: "다시 해줘", "그만해줘", "멈춰줘", "처음부터 다시", "더 자세히 알려줘", "도와줘". 실제 대화에서 자주 나오면 같은 방식(테스트 선행)으로 보강.
+    3. 대화 기억(`num_history_runs=10`)이 누적되면 요청이 커진다(4턴 후 10.6KB). 컨텍스트가 작은 LLM에서는 기억 턴 수를 줄이거나 tool 결과를 기억에서 제외하는 설정을 검토.
+    4. 가드 거절 때 `agno` 로거의 `ERROR` 한 줄(5A 기록)은 변경하지 않음(서버 콘솔 소음일 뿐).
+  - Step 5C-2로 넘기는 사항
+    - AGNO는 이전 턴의 `assistant(tool_calls)`와 `tool` 결과를 다음 요청에 모두 실어 보낸다(검증됨) → 규칙 기반 데모 서버는 **상태 없이** 메시지 이력만으로 동작할 수 있다
+      (예: 사용자가 "응"이면 이력에서 마지막 `preview_training` 호출의 인자를 찾아 `start_training_confirmed`로 그대로 전달).
+    - 데모 서버는 진짜 LLM이 아님을 문서와 출력에 표시하고, `agent/demo/`로 분리한다. 같은 서버로 다중 턴 시나리오 테스트를 구동한다. 선택적 `vllm` 마커 테스트는 `VLLM_BASE_URL`이 있을 때만 실행.
+
 ### Step 5C-2. 규칙 기반 데모 서버 + 실제 LLM 연결 테스트 (세부 계획은 5C-2 RED에서 확정)
 - 범위(예정): `agent/demo/mock_llm_server.py`(키워드 규칙으로 tool 호출을 흉내 내는 OpenAI 호환 서버, 진짜 LLM이 아님을 명시), `python -m agent.demo`(서버 + 채팅), 이 서버로 구동하는 다중 턴 시나리오 테스트,
   `vllm` 마커 선택 테스트(`VLLM_BASE_URL` 없으면 skip).

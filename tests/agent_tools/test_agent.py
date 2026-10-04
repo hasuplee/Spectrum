@@ -6,28 +6,16 @@ agent.agent가 아직 없으므로 실패해야 한다 (RED). LLM은 진짜가 �
 새 모듈 import는 각 테스트 안에서 하여 개별 실패로 확인한다.
 """
 
-import sys
 import time
 
 import pytest
+
+from tests.support.fake_training import use_fake_training
 
 EXPECTED_TOOLS = {
     "list_trained_models", "show_training_defaults", "preview_training", "start_training_confirmed",
     "check_training_status", "list_molecule_ids", "predict_molecule_spectrum",
 }
-
-
-@pytest.fixture(autouse=True)
-def _fresh_jobs(monkeypatch):
-    from agent.tools import train_tool
-
-    monkeypatch.setattr(train_tool, "_jobs", {}, raising=False)
-
-
-def _use_fake_training(monkeypatch, code):
-    from agent.tools import train_tool
-
-    monkeypatch.setattr(train_tool, "build_training_command", lambda request: [sys.executable, "-c", code])
 
 
 def _fake_model(fake_llm):
@@ -181,7 +169,7 @@ def test_학습_시나리오_미리보기_후_사용자_확인으로_학습이_�
     from agent.agent import build_agent, chat
 
     marker = tmp_path / "ran.txt"
-    _use_fake_training(monkeypatch, f"open({str(marker)!r}, 'w').write('x'); print('학습 실행')")
+    use_fake_training(monkeypatch, f"open({str(marker)!r}, 'w').write('x'); print('학습 실행')")
     settings = {"train_steps": 5}
     agent = build_agent(model=_fake_model(fake_llm), project_root=tmp_path)
 
@@ -211,7 +199,7 @@ def test_미리보기_없이_학습_시작을_시도하면_tool이_거부한다(
     from agent.agent import build_agent, chat
 
     marker = tmp_path / "ran.txt"
-    _use_fake_training(monkeypatch, f"open({str(marker)!r}, 'w').write('x')")
+    use_fake_training(monkeypatch, f"open({str(marker)!r}, 'w').write('x')")
     fake_llm.queue_tool_calls(("start_training_confirmed", {"base_model": "PaiNN"}))  # 설정을 보여 주는 단계를 건너뛰는 LLM
     fake_llm.queue_text("먼저 설정을 확인해야 해요")
     agent = build_agent(model=_fake_model(fake_llm), project_root=tmp_path)
@@ -240,7 +228,7 @@ def test_세션마다_Agent가_독립적이다(fake_llm, tmp_path, monkeypatch):
     from agent.agent import build_agent, chat
 
     marker = tmp_path / "ran.txt"
-    _use_fake_training(monkeypatch, f"open({str(marker)!r}, 'w').write('x')")
+    use_fake_training(monkeypatch, f"open({str(marker)!r}, 'w').write('x')")
     agent_a = build_agent(model=_fake_model(fake_llm), project_root=tmp_path)
     agent_b = build_agent(model=_fake_model(fake_llm), project_root=tmp_path)
 

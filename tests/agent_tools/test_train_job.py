@@ -15,22 +15,10 @@ from pathlib import Path
 import pytest
 import torch
 
+from tests.support.fake_training import use_fake_training
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TINY_PAINN = {"train_steps": 5, "eval_steps": 5, "batch_size": 4, "embed_dim": 8, "num_layers": 1, "num_basis": 8}
-
-
-@pytest.fixture(autouse=True)
-def _fresh_jobs(monkeypatch):
-    from agent.tools import train_tool
-
-    monkeypatch.setattr(train_tool, "_jobs", {}, raising=False)
-
-
-def _use_fake_training(monkeypatch, code):
-    """학습 명령을 `python -c 코드`로 대체한다 (프로세스 실행/로그/종료 코드는 실제 그대로)."""
-    from agent.tools import train_tool
-
-    monkeypatch.setattr(train_tool, "build_training_command", lambda request: [sys.executable, "-c", code])
 
 
 def _wait_until_done(job_id, project_root, timeout=60):
@@ -50,7 +38,7 @@ def _wait_until_done(job_id, project_root, timeout=60):
 
 def test_확인하지_않으면_실행하지_않고_needs_confirmation을_반환한다(tmp_path, monkeypatch):
     marker = tmp_path / "ran.txt"
-    _use_fake_training(monkeypatch, f"open({str(marker)!r}, 'w').write('x')")
+    use_fake_training(monkeypatch, f"open({str(marker)!r}, 'w').write('x')")
     from agent.tools.train_tool import start_training
 
     result = start_training("PaiNN", {"train_steps": 5}, project_root=tmp_path)
@@ -66,7 +54,7 @@ def test_확인하지_않으면_실행하지_않고_needs_confirmation을_반환
 
 def test_잘못된_요청은_검증_오류를_그대로_반환하고_실행하지_않는다(tmp_path, monkeypatch):
     marker = tmp_path / "ran.txt"
-    _use_fake_training(monkeypatch, f"open({str(marker)!r}, 'w').write('x')")
+    use_fake_training(monkeypatch, f"open({str(marker)!r}, 'w').write('x')")
     from agent.tools.train_tool import start_training
 
     unknown_parameter = start_training("PaiNN", {"lr": 0.1}, confirmed=True, project_root=tmp_path)
@@ -82,7 +70,7 @@ def test_잘못된_요청은_검증_오류를_그대로_반환하고_실행하�
 
 
 def test_확인하면_백그라운드로_시작하고_작업_디렉터리와_로그를_남긴다(tmp_path, monkeypatch):
-    _use_fake_training(monkeypatch, "import os; print('cwd=' + os.getcwd(), flush=True)")
+    use_fake_training(monkeypatch, "import os; print('cwd=' + os.getcwd(), flush=True)")
     from agent.tools.train_tool import start_training
 
     started = start_training("PaiNN", confirmed=True, project_root=tmp_path)
@@ -101,7 +89,7 @@ def test_확인하면_백그라운드로_시작하고_작업_디렉터리와_로
 
 
 def test_작업이_끝나면_finished_상태와_로그_tail을_알려준다(tmp_path, monkeypatch):
-    _use_fake_training(monkeypatch, "print('시작'); print('학습 완료 마커')")
+    use_fake_training(monkeypatch, "print('시작'); print('학습 완료 마커')")
     from agent.tools.train_tool import start_training
 
     started = start_training("Equiformer", confirmed=True, project_root=tmp_path)
@@ -120,7 +108,7 @@ def test_작업이_끝나면_finished_상태와_로그_tail을_알려준다(tmp_
 
 
 def test_작업이_실패하면_failed_상태와_return_code와_로그를_알려준다(tmp_path, monkeypatch):
-    _use_fake_training(monkeypatch, "import sys; print('boom: 학습 실패', file=sys.stderr); sys.exit(3)")
+    use_fake_training(monkeypatch, "import sys; print('boom: 학습 실패', file=sys.stderr); sys.exit(3)")
     from agent.tools.train_tool import start_training
 
     started = start_training("PaiNN", confirmed=True, project_root=tmp_path)
@@ -132,7 +120,7 @@ def test_작업이_실패하면_failed_상태와_return_code와_로그를_알려
 
 
 def test_실행_중에_다시_시작하면_busy를_반환한다(tmp_path, monkeypatch):
-    _use_fake_training(monkeypatch, "import time; time.sleep(3)")
+    use_fake_training(monkeypatch, "import time; time.sleep(3)")
     from agent.tools.train_tool import get_training_status, start_training
 
     first = start_training("PaiNN", confirmed=True, project_root=tmp_path)
@@ -147,7 +135,7 @@ def test_실행_중에_다시_시작하면_busy를_반환한다(tmp_path, monkey
 
 
 def test_log_tail은_tail_lines만큼만_반환한다(tmp_path, monkeypatch):
-    _use_fake_training(monkeypatch, "for i in range(50): print('line', i)")
+    use_fake_training(monkeypatch, "for i in range(50): print('line', i)")
     from agent.tools.train_tool import get_training_status, start_training
 
     started = start_training("PaiNN", confirmed=True, project_root=tmp_path)
@@ -158,7 +146,7 @@ def test_log_tail은_tail_lines만큼만_반환한다(tmp_path, monkeypatch):
 
 
 def test_작업이_없으면_no_job을_모르는_job_id는_unknown_job_error를_반환한다(tmp_path, monkeypatch):
-    _use_fake_training(monkeypatch, "pass")
+    use_fake_training(monkeypatch, "pass")
     from agent.tools.train_tool import get_training_status, start_training
 
     assert get_training_status(project_root=tmp_path)["status"] == "no_job"
@@ -175,7 +163,7 @@ def test_작업이_없으면_no_job을_모르는_job_id는_unknown_job_error를_
 def test_실행_중에도_로그_tail에서_진행_상황을_볼_수_있다(tmp_path, monkeypatch):
     # 학습 로그는 flush 없이 print되므로, 자식 프로세스를 버퍼링 없이(PYTHONUNBUFFERED) 실행해야 실행 중에도 보인다.
     # 한글 출력은 자식 프로세스가 UTF-8(PYTHONUTF8)로 기록해야 로그를 올바르게 읽을 수 있다 (Windows 기본은 cp949).
-    _use_fake_training(monkeypatch, "print('진행 중 마커'); import time; time.sleep(8)")
+    use_fake_training(monkeypatch, "print('진행 중 마커'); import time; time.sleep(8)")
     from agent.tools.train_tool import get_training_status, start_training
 
     started = start_training("PaiNN", confirmed=True, project_root=tmp_path)
@@ -198,7 +186,7 @@ def test_실행_중에도_로그_tail에서_진행_상황을_볼_수_있다(tmp_
 
 def test_이미_학습된_체크포인트가_있으면_overwrite_없이는_already_trained를_반환한다(tmp_path, monkeypatch):
     marker = tmp_path / "ran.txt"
-    _use_fake_training(monkeypatch, f"open({str(marker)!r}, 'w').write('x')")
+    use_fake_training(monkeypatch, f"open({str(marker)!r}, 'w').write('x')")
     checkpoint = tmp_path / "results_PaiNN" / "0" / "0" / "checkpoint_best.ckpt"
     checkpoint.parent.mkdir(parents=True)
     checkpoint.write_bytes(b"")
@@ -216,7 +204,7 @@ def test_이미_학습된_체크포인트가_있으면_overwrite_없이는_alrea
 
 
 def test_overwrite를_주면_기존_출력_디렉터리를_지우고_시작한다(tmp_path, monkeypatch):
-    _use_fake_training(monkeypatch, "import os; print('old_exists=' + str(os.path.exists('results_PaiNN/0/0/old.txt')))")
+    use_fake_training(monkeypatch, "import os; print('old_exists=' + str(os.path.exists('results_PaiNN/0/0/old.txt')))")
     old_output = tmp_path / "results_PaiNN" / "0" / "0"
     old_output.mkdir(parents=True)
     (old_output / "checkpoint_best.ckpt").write_bytes(b"")
@@ -235,7 +223,7 @@ def test_overwrite를_주면_기존_출력_디렉터리를_지우고_시작한�
 
 
 def test_학습이_체크포인트를_만들면_has_checkpoint가_True이다(tmp_path, monkeypatch):
-    _use_fake_training(monkeypatch, (
+    use_fake_training(monkeypatch, (
         "import os; os.makedirs('results_PaiNN/0/0', exist_ok=True); "
         "open('results_PaiNN/0/0/checkpoint_best.ckpt', 'wb').close()"))
     from agent.tools.train_tool import start_training
