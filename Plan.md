@@ -470,6 +470,30 @@ Step 0은 환경 세팅, Step 1~7은 `.claude/TDD/SKILL.md`의 RED → GREEN →
 - 완료 조건(REVIEW 종료 시): 신규 테스트 + 기존 101개 통과, 실제 `train_*.py`로 만든 명령이 `--help`/인자 파싱 단계에서 거부되지 않음을 확인(세 모델의 argparse가 조립된 인자를 모두 수용),
   `train.py`·`train_*.py` 변경 없음, 기본값이 스크립트 값과 일치(복사본 없음).
 
+- **완료 결과 (Step 4A 종료)**
+  - RED(`49c25ba`): 26개 케이스가 `ModuleNotFoundError: agent.tools.train_tool`로 실패. GREEN(`f5b39d4`): `agent/tools/train_tool.py` 신규(184줄), 신규 26개 통과 + 전체 127개 통과.
+  - REVIEW 확인 사항
+    - 스코프: Plan 범위 안(프로세스 실행/상태/확인 절차 없음). `train.py`·`train_*.py` 변경 없음(GREEN 커밋은 신규 파일 1개). 기본값은 스크립트/yml에서 읽고 복사본 없음.
+    - 실제 학습 검증: 도구가 만든 명령을 **저장소 루트에서 그대로 실행**(워커 수는 기본값 그대로, step 수·모델 크기만 tiny로 override). 세 모델 모두 종료 코드 0이고
+      체크포인트가 `training_output_dir`/registry의 탐색 경로에 생성됨 — PaiNN `results_PaiNN/0/0/checkpoint_best.ckpt`, Equiformer `results_Equiformer/0/0/checkpoint_best.ckpt`,
+      Geoformer `results_Geoformer/0/0/checkpoints/{last,epoch=...}.ckpt`(registry의 `find_checkpoints`가 모두 찾음). 즉 argparse가 조립된 인자를 모두 수용하고 경로 규칙이 일치한다.
+      (실행으로 만든 `results_*`는 확인 후 삭제함. 모두 `.gitignore` 대상.)
+    - **워커 수 기본값 관찰 (4B 설계의 결정 사항)**: 같은 tiny 설정에서 기본 워커 수와 `workers=0`의 소요 시간이 크게 다르다.
+      | 모델 | 기본 workers | 기본값 실행 | workers=0 실행(Step 0/2D 실측) |
+      |---|---|---|---|
+      | PaiNN (5 step) | 4 | 35.5초 | 약 10초(20 step) |
+      | Geoformer (4 step) | 6 | **217.8초** | 12초 |
+      | Equiformer (2 step) | 4 | 79.2초 | 56초 |
+      Windows에서는 DataLoader 워커 프로세스 생성(spawn) 비용이 평가 때마다 반복되어 CPU 학습이 크게 느려진다(특히 Geoformer yml의 6 워커). 결과는 정상 종료하므로 동작 문제는 아니고
+      성능 문제다.
+    - 허용 파라미터 검증의 한계(의도된 것): 필드 간 조합(예: Geoformer에서 `embedding_dim`이 `num_heads`로 나누어떨어져야 함)은 사전 검증하지 않는다. 잘못된 조합은 학습 프로세스가
+      실패하며, 4B의 상태 조회가 `failed`와 로그 tail로 알려준다.
+    - 리팩토링: 제안 없음(코드 변경 없음). 참고: `_train_py_defaults`가 `sys.argv`를 잠시 바꾼다(호출 동안만, 스레드 안전하지 않음 — 문서화됨).
+  - **4B 전에 결정할 사항 (사용자 확인 필요)**: CPU 환경에서 `workers` 기본값을 어떻게 할 것인가.
+    - 안 A: 스크립트 기본값 유지(PaiNN 4, Geoformer 6) — 제약 2에 가장 엄격. 대신 CPU 사용자는 `workers=0`을 직접 지정해야 하고 Agent/UI가 이를 안내해야 한다.
+    - 안 B: CPU일 때만 tool 기본 `workers`를 0으로 한다(`train.build_command`가 CPU일 때 Geoformer에 `--accelerator cpu`를 붙이는 것과 같은 성격의 "CPU 환경 적응").
+      GPU에서는 스크립트 기본값 그대로. 워커 수는 학습 데이터 순서/수치에 영향을 주지 않는 런타임 설정이지만(제약 2에 명시된 값 목록에 없음), 기본값을 바꾸는 것이므로 승인이 필요하다.
+
 ### Step 4B. 백그라운드 실행 + 상태 조회 (세부 계획은 4B RED에서 확정)
 - 범위(예정)
   - `start_training(base_model, overrides=None, *, confirmed=False, overwrite=False, ...)`: `confirmed=False`면 실행하지 않고 `{"status": "needs_confirmation", "settings": {...}}`로 최종 설정을
