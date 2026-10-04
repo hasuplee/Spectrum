@@ -190,14 +190,14 @@ def test_학습_미리보기는_실행하지_않고_최종_설정과_덮어쓰�
     (old_output / "checkpoint_best.ckpt").write_bytes(b"")
     with_old_result = training_preview("PaiNN", False, "", project_root=tmp_path)
     bad_json = training_preview("PaiNN", False, "이건 JSON이 아님", project_root=tmp_path)
-    bad_parameter = training_preview("PaiNN", False, '{"lr": 0.1}', project_root=tmp_path)
+    bad_parameter = training_preview("PaiNN", False, '{"seed": 1}', project_root=tmp_path)  # 정수 값이라 파싱은 통과하고, tool이 변경 불가를 알린다
     time.sleep(1.0)  # 프로세스가 (잘못) 시작되었다면 흔적을 남길 시간
 
     assert re.search(r"train_steps\D*7\b", merged) and str(quick["batch_size"]) in merged
     assert re.search(r"train_steps\D*10000\b", plain)  # 빠른 설정을 끄면 기본값
     assert "삭제" not in plain and "삭제" in with_old_result  # 기존 학습 결과가 있으면 덮어쓰기 경고
     assert "JSON" in bad_json
-    assert "lr" in bad_parameter and "변경할 수 없는" in bad_parameter
+    assert "seed" in bad_parameter and "변경할 수 없는" in bad_parameter
     assert not marker.exists()
 
 
