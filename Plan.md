@@ -250,9 +250,39 @@ Step 0은 환경 세팅, Step 1~7은 `.claude/TDD/SKILL.md`의 RED → GREEN →
     단일 분자 예측은 forward 약 0.2초 수준이다. 정규화 값 출처: PaiNN은 학습 split 재계산(0.2초, 전역 난수 시드 재설정 부작용 — 2B 기록 참고),
     Equiformer는 ckpt `args`에 저장된 값.
 
-### Step 2D. Geoformer (세부 계획은 2D RED에서 확정)
-- 범위(예정): Lightning ckpt의 `state_dict`에서 `model.` 접두사 제거, `hyper_parameters`로 모델 재구성,
-  norm_factor는 `[0, 1]`(모델 내부 역정규화).
+### Step 2D. Geoformer: Lightning 체크포인트 로드 (`common/inference.py` 확장)
+- 목표: Geoformer(Lightning) 체크포인트에서 모델을 복원하고 `load_checkpoint`/`predict_curves`가 세 백본 모두에서 같은 방식으로 동작하게 한다 (G2).
+- 조사 근거 (`train_Geoformer`를 CPU에서 tiny 설정으로 실행해 만든 **실제** ckpt 확인: `--embedding-dim 8 --ffn-embedding-dim 16 --num-layers 1
+  --num-heads 2 --num-rbf 8 --num-steps 4`, 12초)
+  - ckpt 최상위 키: `epoch, global_step, pytorch-lightning_version, state_dict, loops, callbacks, optimizer_states, lr_schedulers, hparams_name,
+    hyper_parameters, datamodule_hyper_parameters`. `epoch=N-val_loss=X.ckpt`와 `last.ckpt`가 같은 구조.
+  - `hyper_parameters`는 `Namespace`가 아니라 **일반 dict**(66개 키): `max_z, embedding_dim, ffn_embedding_dim, num_layers, num_heads, cutoff, num_rbf,
+    trainable_rbf, norm_type, decoder_type, aggr, dataset_root, dataset_arg, prior_model, num_classes, pad_token_id, mean, std, lineshape, beta, n_mode,
+    standardize, splits` 등 — `geoformer_adapter.build`(=`create_model`)가 읽는 필드가 모두 있다.
+  - **`spectrum_type`이 없고 `spec_loss_type`('FC' 등)이 그 역할**을 한다. `predict_curves`는 `args.spectrum_type`을 읽으므로 매핑이 필요하다.
+  - `state_dict` 키는 전부 `model.` 접두사(LNNP의 `self.model`)이며 `model.mean`, `model.std` 버퍼가 포함된다 → 접두사를 제거해 `GeoformerForEnergyRegression`에 로드.
+  - 모델이 `logits * std + mean`을 내부에서 적용해 **출력이 이미 역정규화**되어 있다 → `norm_factor`는 항상 `[0, 1]`. 현재 `_restore_norm_factor`는
+    `standardize=True`면 학습 split으로 재계산하므로 Geoformer에 그대로 쓰면 이중 역정규화가 된다.
+- 범위
+  - 포함 (`common/inference.py`)
+    - 모델별 로드 방식을 분리: PaiNN/Equiformer는 기존(`checkpoint['args']`, `checkpoint['model']`), Geoformer는
+      `hyper_parameters`(dict)를 속성 접근이 되는 args로 바꾸고 `spectrum_type = spec_loss_type`을 채우며,
+      `state_dict`에서 `model.` 접두사를 제거해 `geoformer_adapter.build(args)`로 만든 모델에 로드(`eval()`).
+    - Geoformer의 기본 `norm_factor`는 `[zeros(len(dataset_arg)), ones(len(dataset_arg))]`(데이터셋 접근 없음). 호출자가 `norm_factor`를 직접
+      넘기면 그대로 사용(기존 규칙).
+    - 지원 목록·docstring 갱신.
+  - 미포함: 분자 조회(Step 3), 어떤 ckpt(`last` vs best)를 쓸지 선택하는 정책(Step 3/registry 쪽 결정), `geoformer/`·`train_Geoformer.py`·`predict()` 수정,
+    `Equiformer`/`PaiNN` 동작 변경(2B/2C 테스트 10개가 회귀 오라클).
+- 테스트 계획 (`tests/refactor/test_inference_checkpoint_geoformer.py`; tiny Geoformer를 실제 Lightning ckpt 구조(`state_dict`의 `model.` 접두사 +
+  `hyper_parameters` dict)로 `tmp_path`에 저장. 모델 `mean/std` 버퍼에 물리적으로 말이 되는 값을 주어 NaN 방지. 새 동작 호출은 각 테스트 안에서)
+  1. `test_Geoformer_Lightning_체크포인트를_로드하면_원본_모델과_같은_출력을_낸다` (접두사 제거 + `eval()`, `predict()`를 `[0, 1]`로 호출한 결과가 일치)
+  2. `test_Geoformer는_모델이_이미_역정규화하므로_norm_factor가_0과_1이다` (ckpt에 `standardize=True`와 존재하지 않는 split 경로를 넣어 데이터셋을 읽지 않음도 검증)
+  3. `test_Geoformer_hyper_parameters는_속성_접근이_가능한_args로_복원되고_spectrum_type은_spec_loss_type에서_온다`
+  4. `test_Geoformer_predict_curves는_모델이_출력한_파라미터로_곡선을_복원한다` (shape `(2, 800)`, 유한값, 원본 모델 출력 → `reconstruct_spectrum` 결과와 일치)
+  5. `test_Geoformer_norm_factor를_직접_주면_그대로_사용한다` (명시적 지정 우선 규칙 확인)
+- RED 검증 기준: 5개 모두 `ValueError: Unsupported base_model: 'Geoformer'`로 실패. 기존 77개는 통과.
+- 완료 조건(REVIEW 종료 시): 신규 5개 + 기존 77개 통과, 실제 Geoformer ckpt(위 tiny 학습 산출물, `epoch=*.ckpt`와 `last.ckpt` 모두)를 로드해 test split 103개를
+  예측하고 학습 스크립트가 만든 `p.csv`/`p_spec.csv`와 비교, `geoformer/`·`train_Geoformer.py` 변경 없음.
 
 ## Step 3. 예측 tool (신규 인터페이스)
 - 목표: IrDB 분자(ID 또는 인덱스) → 예측 spectrum (G2).
