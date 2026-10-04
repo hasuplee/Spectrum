@@ -54,7 +54,7 @@ training_utils, inference)과 `spectrum/physics`로 정리되었다. Phase 2에�
 
 ## 제약
 
-- CLAUDE.md의 라이센스 경계(`spectrum/` ↔ 그 외), 한글 테스트명/커밋, 자동 커밋, TDD 규칙을 따른다.
+- CLAUDE.md의 라이센스 경계(`spectrum/` ↔ 그 외), 한글 테스트명/커밋, TDD 규칙(Step당 RED/GREEN/REVIEW 세 커밋, Claude는 메시지만 작성하고 사용자가 직접 커밋)을 따른다.
 - 기존 학습 스크립트의 기본값은 바꾸지 않는다. tool은 CLI 인자를 통해 값을 **전달**할 뿐이다
   (smoke 테스트용 작은 설정은 호출 시 override).
 - 테스트 시간: 기존 46개 테스트 전체가 약 56초(Equiformer 모델 생성 ~8초/건). 신규 테스트는 LLM mock,

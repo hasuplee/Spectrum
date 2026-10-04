@@ -2,8 +2,9 @@
 
 목표/비목표는 [PRD.md](PRD.md)(G1~G6)를 따른다. 모든 Step은 Windows CPU(`venv_spectrum_cpu`)에서 검증한다.
 Step 0은 환경 세팅, Step 1~7은 `.claude/TDD/SKILL.md`의 RED → GREEN → REVIEW 사이클로 진행한다.
-커밋은 CLAUDE.md 제약 5/6에 따라 **RED 종료 시점**과 **REVIEW 종료 시점**에 자동으로 한다.
-(Step 0은 TDD 대상이 아니므로 논리 변경 단위별로 커밋한다.)
+커밋은 CLAUDE.md 제약 5/6에 따라 Step마다 **RED 종료 / GREEN 종료 / REVIEW 종료의 세 번**, 제목은
+`Step X RED: ...` / `Step X GREEN: ...` / `Step X REVIEW: ...` 형식으로 하며, **Claude는 커밋 메시지만 작성하고, 커밋은 사용자가 직접 한다.**
+(Step 0은 TDD 대상이 아니므로 논리 변경 단위별로 커밋했고, 그때는 자동 커밋이었다.)
 
 공통 테스트 원칙: LLM은 mock, 학습 subprocess는 mock, 실제 학습은 tiny 설정 + `slow` 마커.
 각 Step 완료 시 기존 Phase 1 테스트(46개)가 계속 통과해야 한다(G6).
