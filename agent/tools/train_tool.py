@@ -20,9 +20,9 @@ import torch
 import yaml
 
 import train
+from agent.tools._shared import PROJECT_ROOT, unsupported_base_model_error
 from agent.tools.registry import SUPPORTED_BASE_MODELS, get_latest_checkpoint, has_trained_model
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SEED, FOLD = 0, 0  # train.py와 같은 고정값 (체크포인트 경로 규칙: registry와 일치)
 
 # job_id -> 작업 기록. 프로세스 메모리에만 있다(재시작 후 복구하지 않음). 삽입 순서가 곧 시작 순서다.
@@ -51,7 +51,7 @@ _CLI_FLAGS = {
 def get_training_defaults(base_model) -> dict:
     """학습 스크립트가 실제로 쓰는 기본 설정 (train.py가 넘기는 값 + 각 스크립트/yml의 기본값)."""
     if base_model not in SUPPORTED_BASE_MODELS:
-        return _unsupported_base_model(base_model)
+        return unsupported_base_model_error(base_model)
 
     train_py = _train_py_defaults(base_model)
     script = _script_defaults(base_model)
@@ -90,7 +90,7 @@ def validate_training_request(base_model, overrides=None) -> dict:
         if parameter not in allowed:
             return _error("unknown_parameter", parameter,
                           f"변경할 수 없는 파라미터입니다: {parameter}. 변경 가능: {', '.join(allowed)}")
-        problem = _value_problem(parameter, value, size_parameters)
+        problem = _value_problem(parameter, value)
         if problem:
             return _error("invalid_value", parameter, f"{parameter}={value!r}: {problem}")
         if parameter in size_parameters:
@@ -111,13 +111,9 @@ def build_training_command(request) -> list:
     command = _core_command(base_model, request["spectrum_type"], request["batch_size"], request["data_path"])
 
     script = _script_defaults(base_model)
-    flags = _CLI_FLAGS[base_model]
-    for parameter, flag in flags.items():
-        if parameter in _COMMON_INT_MINIMUMS:
-            value, default = request[parameter], script[parameter]
-        else:
-            value, default = request["model_size"][parameter], script["model_size"][parameter]
-        if value != default:
+    for parameter, flag in _CLI_FLAGS[base_model].items():
+        value = _setting(request, parameter)
+        if value != _setting(script, parameter):
             command += [flag, str(value)]
     return command
 
@@ -147,16 +143,7 @@ def start_training(base_model, overrides=None, *, confirmed=False, overwrite=Fal
     output_dir = training_output_dir(base_model)
     existing = get_latest_checkpoint(project_root, base_model)
     if not confirmed:
-        message = "아래 설정으로 학습을 시작합니다. 진행하려면 사용자에게 확인을 받은 뒤 confirmed=True로 다시 호출하세요."
-        if existing is not None:
-            message += " 이미 학습된 체크포인트가 있어 덮어쓰려면 overwrite=True도 필요합니다(기존 결과가 삭제됩니다)."
-        return {
-            "status": "needs_confirmation",
-            "settings": request,
-            "output_dir": output_dir,
-            "will_overwrite": existing is not None,
-            "message": message,
-        }
+        return _needs_confirmation(request, output_dir, will_overwrite=existing is not None)
     if existing is not None and not overwrite:
         return {
             "status": "already_trained",
@@ -166,7 +153,24 @@ def start_training(base_model, overrides=None, *, confirmed=False, overwrite=Fal
 
     if overwrite and (project_root / output_dir).exists():
         shutil.rmtree(project_root / output_dir)
+    return _launch_job(base_model, request, output_dir, project_root)
 
+
+def _needs_confirmation(request, output_dir, will_overwrite) -> dict:
+    message = "아래 설정으로 학습을 시작합니다. 진행하려면 사용자에게 확인을 받은 뒤 confirmed=True로 다시 호출하세요."
+    if will_overwrite:
+        message += " 이미 학습된 체크포인트가 있어 덮어쓰려면 overwrite=True도 필요합니다(기존 결과가 삭제됩니다)."
+    return {
+        "status": "needs_confirmation",
+        "settings": request,
+        "output_dir": output_dir,
+        "will_overwrite": will_overwrite,
+        "message": message,
+    }
+
+
+def _launch_job(base_model, request, output_dir, project_root) -> dict:
+    """학습 프로세스를 백그라운드로 시작하고 작업 기록을 남긴다."""
     job_id = f"{base_model.lower()}-{uuid.uuid4().hex[:8]}"
     log_path = project_root / "results_agent_logs" / f"{job_id}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -226,10 +230,17 @@ def training_output_dir(base_model) -> str:
     """학습 결과가 저장되는 디렉터리 (저장소 루트 기준). registry의 탐색 규칙과 같다."""
     if base_model not in SUPPORTED_BASE_MODELS:
         raise ValueError(f"Unsupported base_model: {base_model!r}. Available: {', '.join(SUPPORTED_BASE_MODELS)}")
-    defaults = get_training_defaults(base_model)
-    command = _core_command(base_model, defaults["spectrum_type"], defaults["batch_size"], defaults["data_path"])
+    train_py = _train_py_defaults(base_model)
+    command = _core_command(base_model, train_py.spectrum_type, train_py.batch_size, train_py.data_path)
     flag = "--log-dir" if base_model == "Geoformer" else "--output-dir"
     return command[command.index(flag) + 1]
+
+
+def _setting(settings, parameter):
+    """공통 파라미터는 최상위에, 모델 크기 파라미터는 `model_size` 안에 있다."""
+    if parameter in _COMMON_INT_MINIMUMS:
+        return settings[parameter]
+    return settings["model_size"][parameter]
 
 
 def _running_job():
@@ -277,7 +288,7 @@ def _script_defaults(base_model) -> dict:
     }
 
 
-def _value_problem(parameter, value, size_parameters):
+def _value_problem(parameter, value):
     """값이 올바르면 None, 아니면 사유 문자열."""
     if parameter == "spectrum_type":
         return None if value in train.spectrum_types else f"가능한 값: {', '.join(train.spectrum_types)}"
@@ -287,15 +298,6 @@ def _value_problem(parameter, value, size_parameters):
     if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
         return f"{minimum} 이상의 정수여야 합니다"
     return None
-
-
-def _unsupported_base_model(base_model) -> dict:
-    return {
-        "status": "error",
-        "error": "unsupported_base_model",
-        "supported": list(SUPPORTED_BASE_MODELS),
-        "message": f"지원하지 않는 모델입니다: {base_model}. 사용 가능: {', '.join(SUPPORTED_BASE_MODELS)}",
-    }
 
 
 def _error(error, parameter, message) -> dict:

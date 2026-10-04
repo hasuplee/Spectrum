@@ -546,6 +546,42 @@ Step 0은 환경 세팅, Step 1~7은 `.claude/TDD/SKILL.md`의 RED → GREEN →
 - 완료 조건(REVIEW 종료 시): 신규/수정 테스트와 기존 테스트 통과(slow 포함), 도구로 CPU 기본 워커 수의 실제 학습(tiny)이 4A 리뷰의 기본값 실행보다 빠르게 끝남을 실측, 학습 후 `predict_spectrum`으로 예측까지 연결,
   `train.py`·`train_*.py` 변경 없음, 실행으로 만든 산출물 정리.
 
+- **완료 결과 (Step 4B 종료)**
+  - RED(`a74911d`): 4A 수정 테스트 9개 + 4B 신규 13개 실패. GREEN(`3790e47`): `agent/tools/train_tool.py` 확장(CPU 기본 workers 0, `start_training`, `get_training_status`),
+    4A/4B 테스트 42개(slow 포함) 통과 + 전체 143개 통과.
+  - REVIEW 확인 사항
+    - 스코프: Plan 범위 안. 작업 취소/큐/재시작 후 복구/진행률 파싱 없음. `train.py`·`train_*.py` 변경 없음(GREEN 커밋은 `train_tool.py` 하나).
+    - 실제 학습 검증: 도구(`start_training`)로 세 모델을 **CPU 기본 워커(0)**로 학습 → 상태 조회 → 예측 tool까지 연결(저장소 루트에서 실행, 확인 후 산출물 삭제).
+      | 모델 (tiny 설정) | 4A 리뷰: 스크립트 기본 워커 | 4B: CPU 기본 워커 0 |
+      |---|---|---|
+      | PaiNN (5 step) | 35.5초 | **8.0초** |
+      | Geoformer (4 step) | 217.8초 | **8.5초** |
+      | Equiformer (2 step) | 79.2초 | **52.2초** |
+      세 모델 모두 `needs_confirmation`(`will_overwrite=False`) → `started` → 실행 중 로그 관찰됨 → `finished`(return code 0, `has_checkpoint=True`) → 같은 모델 재시작 시
+      `already_trained` → `predict_spectrum` `ok`(곡선 800점)로 끝까지 동작. 시작 명령에 CPU 기본 `--workers 0`/`--num-workers 0`이 실제로 들어감.
+    - 관찰(코드 변경 없음): Geoformer의 로그 tail은 Lightning tqdm 진행 막대 프레임이라 정보량이 낮다. Step 6 UI에서 진행 막대 줄을 걸러서 보여줄 수 있다.
+  - 리팩토링 (사용자 지시로 REVIEW에서 한꺼번에 처리; 동작 불변, 테스트가 오라클)
+    1. `train_tool._value_problem`의 쓰이지 않는 인자 `size_parameters` 제거.
+    2. `build_training_command`의 "공통 파라미터 대 모델 크기 파라미터" 조회 분기를 `_setting(settings, parameter)` 헬퍼로 정리.
+    3. `training_output_dir`가 경로 계산에 필요한 `train.py` 기본값만 읽도록 단순화(스크립트/yml 전체 파싱 제거).
+    4. `start_training`(약 65줄)에서 확인 응답(`_needs_confirmation`)과 프로세스 실행(`_launch_job`)을 분리해 판단 로직만 남김(약 39줄).
+    5. `predict_tool`과 `train_tool`에 중복되던 `PROJECT_ROOT`와 `unsupported_base_model` 응답을 `agent/tools/_shared.py`로 공통화.
+    6. `predict_tool`의 데이터셋 클래스 선택(`IrDB`/`PtDB` 분기)이 `common/data.py`의 `load_dataset_splits`와 중복되던 것을 `common.data.build_dataset(data_path, targets)`로 추출해
+       양쪽에서 사용(3B 리뷰의 개선 후보 2번). 기존 예외 타입/메시지는 그대로(`Exception("data_path must be start 'IrDB' or 'PtDB'")`). 새 공개 함수라 테스트를 먼저
+       추가해 실패(`ImportError`)를 확인한 뒤 구현(`test_build_dataset은_data_path_접두사로_IrDB를_선택한다`).
+    - 리팩토링 중 발견한 회귀: 6번에서 `list_molecules`를 `build_dataset(절대경로)`로 바꾸자 `build_dataset`이 `IrDB`로 *시작하는* 경로를 요구해 거부함(테스트가 즉시 포착).
+      `predict_spectrum`과 같이 `project_root`로 `chdir`한 뒤 상대 이름 `"IrDB"`를 넘기도록 수정. 이후 미사용 import 없음(AST 점검), 전체 144개 통과.
+  - 리뷰에서 검토했으나 변경하지 않은 것
+    - `get_training_status(project_root=...)`는 작업이 시작될 때의 `project_root`를 기록해 두면 불필요한 인자이지만, 4B RED에서 승인된 인터페이스(테스트가 인자를 넘김)를 바꾸지 않았다.
+    - 로그를 매 상태 조회마다 전체 읽기: 현재 로그 크기(최대 수백 KB 추정)에서는 문제없어 최적화하지 않았다(필요해지면 끝부분만 읽도록 개선).
+    - `_script_defaults`가 Geoformer 기본값을 `FC.yml`에서만 읽음: 노출 파라미터는 FC/GMM/Naive가 동일함을 4A에서 확인(주석/Plan에 기록).
+  - Step 5로 넘기는 사항
+    - Agent 래퍼는 `predict_spectrum` 결과의 곡선(약 20KB)을 요약해야 하고(Step 3B 기록), `start_training`의 `needs_confirmation`을 사용자에게 보여 주고 확인을 받은 뒤에만
+      `confirmed=True`로 호출해야 한다. `overwrite=True`는 기존 학습 결과를 **삭제**하므로 사용자에게 분명히 확인해야 한다.
+    - 학습 tool 결과 중 `message`는 한국어이며 LLM이 그대로 사용자에게 전달할 수 있다. 오류는 모두 `status` dict(`busy`/`already_trained`/`error` 등)이므로 예외 처리가 필요 없다.
+    - Geoformer 체크포인트 파일 이름(`epoch=0-val_loss=12.1353.ckpt`)에는 `=`가 있어 경로 인자로 쓸 때 주의(현재 코드는 경로를 인자 문자열 없이 `Path`로만 다룸).
+- **Step 4 전체 완료**: 4A(기본값 조회/검증/명령 조립) → 4B(CPU 기본 워커, 확인 절차, 백그라운드 실행, 상태 조회). 전체 144개 테스트 통과.
+
 ## Step 5. AGNO Agent (신규 인터페이스)
 - 목표: tool을 사용하는 특수 목적 Agent (G3).
 - 범위: `agent/agent.py` — `build_agent(model=None)`; 기본은 `VLLM(id=$VLLM_MODEL, base_url=$VLLM_BASE_URL)`,

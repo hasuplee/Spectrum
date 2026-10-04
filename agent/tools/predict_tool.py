@@ -11,12 +11,12 @@ Agent/UI가 호출하는 함수들이며, 결과는 예외 대신 status가 담�
 import contextlib
 from pathlib import Path
 
+from agent.tools._shared import PROJECT_ROOT, unsupported_base_model_error
 from agent.tools.registry import SUPPORTED_BASE_MODELS, get_latest_checkpoint
+from common.data import build_dataset
 from common.inference import build_batch, load_checkpoint, predict_curves
-from dataset.IrDB import IrDB, PtDB
 from spectrum.reconstruct import wavelength_grid_nm
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MAX_LIST_LIMIT = 100
 
 # base_model -> ((체크포인트 경로, 수정 시각), LoadedCheckpoint). 모델 로드(특히 Equiformer 약 7초)를 반복하지 않기 위함.
@@ -31,12 +31,7 @@ def predict_spectrum(molecule_id, base_model=None, *, results_root=PROJECT_ROOT,
     반환: status가 "ok"(곡선 포함), "needs_training", "error" 중 하나인 dict.
     """
     if base_model is not None and base_model not in SUPPORTED_BASE_MODELS:
-        return {
-            "status": "error",
-            "error": "unsupported_base_model",
-            "supported": list(SUPPORTED_BASE_MODELS),
-            "message": f"지원하지 않는 모델입니다: {base_model}. 사용 가능: {', '.join(SUPPORTED_BASE_MODELS)}",
-        }
+        return unsupported_base_model_error(base_model)
 
     # 작업 디렉터리를 바꾸기 전에 절대 경로로 확정한다.
     checkpoint = get_latest_checkpoint(Path(results_root).resolve(), base_model)
@@ -83,7 +78,8 @@ def list_molecules(query="", limit=20, *, project_root=PROJECT_ROOT) -> dict:
             "error": "invalid_limit",
             "message": f"limit은 1~{MAX_LIST_LIMIT} 사이의 정수여야 합니다: {limit}",
         }
-    dataset = IrDB(root=str(Path(project_root) / "IrDB"), dataset_arg=["S1"])
+    with contextlib.chdir(project_root):  # build_dataset은 'IrDB'로 시작하는 상대 경로를 기대한다 (predict_spectrum과 동일)
+        dataset = build_dataset("IrDB", ["S1"])
     needle = query.lower()
     matches = [name for name in _molecule_names(dataset) if needle in name.lower()]
     return {"status": "ok", "total_matches": len(matches), "molecule_ids": matches[:limit]}
@@ -106,11 +102,7 @@ def _open_dataset(loaded):
         root, targets = args.dataset_root, args.dataset_arg
     else:
         root, targets = args.data_path, args.targets
-    if root.startswith("IrDB"):
-        return IrDB(root=root, dataset_arg=targets)
-    if root.startswith("PtDB"):
-        return PtDB(root=root, dataset_arg=targets)
-    raise ValueError(f"Unsupported dataset root: {root!r}")
+    return build_dataset(root, targets)
 
 
 def _molecule_names(dataset) -> list:
